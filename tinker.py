@@ -18,6 +18,15 @@ AUTOKEY = {
     "p": ["tinker_warp_grenade", "tinker_deploy_turrets", "tinker_rearm"],
 }
 
+TRIGGER_KEYS = set(AUTOKEY.keys())
+IGNORE_KEYS  = {
+    t: TRIGGER_KEYS | {KEY_BINDING[s] for s in spells}
+    for t, spells in AUTOKEY.items()
+}
+
+active_trigger = None
+suppress_rearm = False
+
 castable = {
     skill: False
     for abilities in AUTOKEY.values()
@@ -45,14 +54,22 @@ async def gsi(request: Request):
     return {}
 
 
-def _make_on_trigger(event_obj: threading.Event):
+def _make_on_trigger(trigger_key: str, event_obj: threading.Event):
     def _on_trigger(event) -> None:
-        if event.event_type == keyboard.KEY_DOWN:
+        global active_trigger, suppress_rearm
+        if event.event_type == keyboard.KEY_DOWN and active_trigger is None:
+            active_trigger = trigger_key
+            suppress_rearm = False
             event_obj.set()
-        else:
+        elif event.event_type == keyboard.KEY_UP and active_trigger == trigger_key:
+            active_trigger = None
             event_obj.clear()
     return _on_trigger
 
+def _on_any_key(event):
+    global suppress_rearm
+    if event.event_type == keyboard.KEY_DOWN and active_trigger is not None and event.name not in IGNORE_KEYS[active_trigger]:
+        suppress_rearm = True
 
 def autokey_worker(abilities: list, key_event: threading.Event, gsi_event: threading.Event) -> None:
     while True:
@@ -60,15 +77,20 @@ def autokey_worker(abilities: list, key_event: threading.Event, gsi_event: threa
         gsi_event.wait(timeout=LOOP_INTERVAL)
 
         to_fire = next((a for a in abilities if castable.get(a)), abilities[0])
+        if suppress_rearm and to_fire == "tinker_rearm":
+            continue
         keyboard.press_and_release(KEY_BINDING[to_fire])
 
         gsi_event.clear()
 
 
 if __name__ == "__main__":
+
+    keyboard.hook(_on_any_key)
+
     for trigger_key, abilities in AUTOKEY.items():
         key_ev = trigger_events[trigger_key]
-        keyboard.hook_key(trigger_key, _make_on_trigger(key_ev), suppress=True)
+        keyboard.hook_key(trigger_key, _make_on_trigger(trigger_key, key_ev), suppress=True)
         threading.Thread(
             target=autokey_worker,
             args=(abilities, key_ev, gsi_events[trigger_key]),
