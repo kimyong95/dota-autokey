@@ -14,8 +14,8 @@ KEY_BINDING = {
 }
 
 AUTOKEY = {
-    "o": ["tinker_warp_grenade", "tinker_laser", "tinker_rearm"],
-    "p": ["tinker_warp_grenade", "tinker_deploy_turrets", "tinker_rearm"],
+    "[": ["tinker_warp_grenade", "tinker_laser", "tinker_rearm"],
+    "]": ["tinker_warp_grenade", "tinker_laser", "tinker_deploy_turrets", "tinker_rearm"],
 }
 
 TRIGGER_KEYS = set(AUTOKEY.keys())
@@ -28,7 +28,7 @@ active_trigger = None
 suppress_rearm = False
 
 castable = {
-    skill: False
+    skill: True
     for abilities in AUTOKEY.values()
     for skill in abilities
 }
@@ -42,7 +42,6 @@ app = FastAPI()
 @app.post("/")
 async def gsi(request: Request):
     payload = await request.json()
-
     abilities = payload.get("abilities", {})
     for ability_id, prev_ability_data in payload.get("previously", {}).get("abilities", {}).items():
         curr_ability_data = abilities[ability_id]
@@ -80,6 +79,7 @@ def autokey_worker(abilities: list, key_event: threading.Event, gsi_event: threa
         if suppress_rearm and to_fire == "tinker_rearm":
             continue
         keyboard.press_and_release(KEY_BINDING[to_fire])
+        keyboard.press_and_release("2")
 
         gsi_event.clear()
 
