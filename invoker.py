@@ -1,11 +1,12 @@
+import queue
 import threading
 import time
 import keyboard
 import uvicorn
 from fastapi import FastAPI, Request
+from collections import Counter
 
-INTERVAL = 0.5
-INVOKE_TIMEOUT = 0.2
+WAIT_INVOKE_TIMEOUT = 0.2
 SLOT_KEYS = {"ability3": "c", "ability4": "v"}   # invoked slot -> cast key
 
 KEY_BINDING = {
@@ -14,28 +15,28 @@ KEY_BINDING = {
 
 AUTOKEY = {
     "q": "invoker_cold_snap",   "w": "invoker_forge_spirit", "e": "invoker_alacrity",
-    "r": "invoker_sun_strike",  "d": "invoker_ghost_walk",   "f": "invoker_ice_wall",
-    "o": "invoker_tornado",     "p": "invoker_emp",
+    "r": "invoker_sun_strike",  "f": "invoker_ghost_walk",   "d": "invoker_ice_wall",
+    "o": "invoker_tornado",     "p": "invoker_emp",          "t": "invoker_sun_strike",
     "4": "invoker_chaos_meteor","5": "invoker_deafening_blast",
 }
 
 INVOKE_RECIPES = {
-    "invoker_cold_snap":       ["invoker_quas",  "invoker_quas",  "invoker_quas",  "invoker_invoke"],
-    "invoker_forge_spirit":    ["invoker_quas",  "invoker_exort", "invoker_exort", "invoker_invoke"],
-    "invoker_alacrity":        ["invoker_wex",   "invoker_wex",   "invoker_exort", "invoker_invoke"],
-    "invoker_sun_strike":      ["invoker_exort", "invoker_exort", "invoker_exort", "invoker_invoke"],
-    "invoker_ghost_walk":      ["invoker_quas",  "invoker_quas",  "invoker_wex",   "invoker_invoke"],
-    "invoker_ice_wall":        ["invoker_quas",  "invoker_quas",  "invoker_exort", "invoker_invoke"],
-    "invoker_tornado":         ["invoker_quas",  "invoker_wex",   "invoker_wex",   "invoker_invoke"],
-    "invoker_emp":             ["invoker_wex",   "invoker_wex",   "invoker_wex",   "invoker_invoke"],
-    "invoker_chaos_meteor":    ["invoker_wex",   "invoker_exort", "invoker_exort", "invoker_invoke"],
-    "invoker_deafening_blast": ["invoker_quas",  "invoker_wex",   "invoker_exort", "invoker_invoke"],
+    "invoker_cold_snap":         ["invoker_quas",  "invoker_quas",  "invoker_quas"],
+    "invoker_forge_spirit":      ["invoker_quas",  "invoker_exort", "invoker_exort"],
+    "invoker_alacrity":          ["invoker_wex",   "invoker_wex",   "invoker_exort"],
+    "invoker_sun_strike":        ["invoker_exort", "invoker_exort", "invoker_exort"],
+    "invoker_ghost_walk":        ["invoker_quas",  "invoker_quas",  "invoker_wex"],
+    "invoker_ice_wall":          ["invoker_quas",  "invoker_quas",  "invoker_exort"],
+    "invoker_tornado":           ["invoker_quas",  "invoker_wex",   "invoker_wex"],
+    "invoker_emp":               ["invoker_wex",   "invoker_wex",   "invoker_wex"],
+    "invoker_chaos_meteor":      ["invoker_wex",   "invoker_exort", "invoker_exort"],
+    "invoker_deafening_blast":   ["invoker_quas",  "invoker_wex",   "invoker_exort"],
 }
 
-active_trigger = None
-wake = threading.Event()
+trigger_queue = queue.Queue()      # FIFO of trigger key names pending cast
 invoked = {}                       # spell -> cast key, updated by GSI
 invoked_event = threading.Event()
+current_orbs = []                  # FIFO queue (max 3) of currently active orb bindings
 
 app = FastAPI()
 
@@ -44,6 +45,7 @@ app = FastAPI()
 async def gsi(request: Request):
     global invoked
     abilities = (await request.json()).get("abilities", {})
+    # print(abilities)
     new = {abilities[s]["name"]: k for s, k in SLOT_KEYS.items() if s in abilities}
     if new != invoked:
         invoked = new
@@ -51,41 +53,51 @@ async def gsi(request: Request):
     return {}
 
 
-def cast(spell: str) -> None:
-    # if not invoked
+def press_orb(orb: str) -> None:
+    keyboard.press_and_release(KEY_BINDING[orb])
+    current_orbs.append(orb)
+    current_orbs[:] = current_orbs[-3:]   # keep only the newest 3 orbs (FIFO)
+
+
+def incremental_orbs(target: list) -> list:
+    for i in range(len(current_orbs) + 1):
+        suffix = current_orbs[i:]
+        if Counter(suffix) <= Counter(target):
+            return list((Counter(target) - Counter(suffix)).elements())
+
+
+def cast(trigger_key: str) -> None:
+    alt = trigger_key.startswith("alt+")
+    key = trigger_key[len("alt+"):] if alt else trigger_key
+    spell = AUTOKEY[key]
+    
+    # invoke
     if spell not in invoked:
-        for binding in INVOKE_RECIPES[spell]:
-            keyboard.press_and_release(KEY_BINDING[binding])
-        end = time.monotonic() + INVOKE_TIMEOUT
-    
-    # wait for invoke to register, or timeout
-    while spell not in invoked:
-        invoked_event.clear()
-        if spell in invoked or not invoked_event.wait(end - time.monotonic()):
-            break
-    
-    key = invoked.get(spell)
-    if key and not keyboard.is_pressed("alt"):
-        keyboard.press_and_release(invoked.get(spell))
+        for orb in incremental_orbs(INVOKE_RECIPES[spell]):
+            press_orb(orb)
+        keyboard.press_and_release(KEY_BINDING["invoker_invoke"])
+
+    # wait (up to WAIT_INVOKE_TIMEOUT) for GSI to confirm the spell is invoked
+    deadline = time.monotonic() + WAIT_INVOKE_TIMEOUT
+    while spell not in invoked and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    # cast (special treatment t for global sun strike)
+    if spell in invoked and not alt:
+        cast_key = invoked[spell] if key != "t" else f"alt+{invoked[spell]}"
+        keyboard.press_and_release(cast_key)
+
 
 def on_trigger(event):
-    global active_trigger
     if event.event_type == keyboard.KEY_DOWN:
-        active_trigger = event.name
-        wake.set()
+        key = f"alt+{event.name}" if keyboard.is_pressed("alt") else event.name
+        trigger_queue.put(key)
 
 
 def worker():
-    last_fire = 0.0
     while True:
-        wake.wait()
-        wake.clear()
-        wait_left = INTERVAL - (time.monotonic() - last_fire)
-        if wait_left > 0:
-            time.sleep(wait_left)
-
-        cast(AUTOKEY[active_trigger])
-        last_fire = time.monotonic()
+        trigger_key = trigger_queue.get()
+        cast(trigger_key)
 
 if __name__ == "__main__":
     for trigger_key in AUTOKEY:
