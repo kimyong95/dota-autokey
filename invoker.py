@@ -13,30 +13,31 @@ KEY_BINDING = {
     "invoker_quas": "7", "invoker_wex": "8", "invoker_exort": "9", "invoker_invoke": 12,
 }
 
+GLOBAL_SUN_STRIKE = "e"
+
 AUTOKEY = {
-    "q": "invoker_cold_snap",   "w": "invoker_forge_spirit", "e": "invoker_alacrity",
-    "r": "invoker_sun_strike",  "f": "invoker_ghost_walk",   "d": "invoker_ice_wall",
-    "o": "invoker_tornado",     "p": "invoker_emp",          "t": "invoker_sun_strike",
-    "4": "invoker_chaos_meteor","5": "invoker_deafening_blast",
+    "o": "invoker_cold_snap",   "d": "invoker_forge_spirit", "f": "invoker_alacrity",
+    "w": "invoker_sun_strike",  "7": "invoker_ghost_walk",   "5": "invoker_ice_wall",
+    "4": "invoker_tornado",     "q": "invoker_emp",          "e": "invoker_sun_strike",
+    "r": "invoker_chaos_meteor","p": "invoker_deafening_blast",
 }
 
 INVOKE_RECIPES = {
-    "invoker_cold_snap":         ["invoker_quas",  "invoker_quas",  "invoker_quas"],
-    "invoker_forge_spirit":      ["invoker_quas",  "invoker_exort", "invoker_exort"],
-    "invoker_alacrity":          ["invoker_wex",   "invoker_wex",   "invoker_exort"],
-    "invoker_sun_strike":        ["invoker_exort", "invoker_exort", "invoker_exort"],
-    "invoker_ghost_walk":        ["invoker_quas",  "invoker_quas",  "invoker_wex"],
-    "invoker_ice_wall":          ["invoker_quas",  "invoker_quas",  "invoker_exort"],
-    "invoker_tornado":           ["invoker_quas",  "invoker_wex",   "invoker_wex"],
-    "invoker_emp":               ["invoker_wex",   "invoker_wex",   "invoker_wex"],
-    "invoker_chaos_meteor":      ["invoker_wex",   "invoker_exort", "invoker_exort"],
-    "invoker_deafening_blast":   ["invoker_quas",  "invoker_wex",   "invoker_exort"],
+    "invoker_cold_snap":         ["invoker_quas",  "invoker_quas",  "invoker_quas",  "invoker_invoke"],
+    "invoker_forge_spirit":      ["invoker_quas",  "invoker_exort", "invoker_exort", "invoker_invoke"],
+    "invoker_alacrity":          ["invoker_wex",   "invoker_wex",   "invoker_exort", "invoker_invoke"],
+    "invoker_sun_strike":        ["invoker_exort", "invoker_exort", "invoker_exort", "invoker_invoke"],
+    "invoker_ghost_walk":        ["invoker_quas",  "invoker_quas",  "invoker_wex",   "invoker_invoke"],
+    "invoker_ice_wall":          ["invoker_quas",  "invoker_quas",  "invoker_exort", "invoker_invoke"],
+    "invoker_tornado":           ["invoker_quas",  "invoker_wex",   "invoker_wex",   "invoker_invoke"],
+    "invoker_emp":               ["invoker_wex",   "invoker_wex",   "invoker_wex",   "invoker_invoke"],
+    "invoker_chaos_meteor":      ["invoker_wex",   "invoker_exort", "invoker_exort", "invoker_invoke"],
+    "invoker_deafening_blast":   ["invoker_quas",  "invoker_wex",   "invoker_exort", "invoker_invoke"],
 }
 
 trigger_queue = queue.Queue()      # FIFO of trigger key names pending cast
 invoked = {}                       # spell -> cast key, updated by GSI
 invoked_event = threading.Event()
-current_orbs = []                  # FIFO queue (max 3) of currently active orb bindings
 
 app = FastAPI()
 
@@ -45,25 +46,11 @@ app = FastAPI()
 async def gsi(request: Request):
     global invoked
     abilities = (await request.json()).get("abilities", {})
-    # print(abilities)
     new = {abilities[s]["name"]: k for s, k in SLOT_KEYS.items() if s in abilities}
     if new != invoked:
         invoked = new
         invoked_event.set()
     return {}
-
-
-def press_orb(orb: str) -> None:
-    keyboard.press_and_release(KEY_BINDING[orb])
-    current_orbs.append(orb)
-    current_orbs[:] = current_orbs[-3:]   # keep only the newest 3 orbs (FIFO)
-
-
-def incremental_orbs(target: list) -> list:
-    for i in range(len(current_orbs) + 1):
-        suffix = current_orbs[i:]
-        if Counter(suffix) <= Counter(target):
-            return list((Counter(target) - Counter(suffix)).elements())
 
 
 def cast(trigger_key: str) -> None:
@@ -73,18 +60,17 @@ def cast(trigger_key: str) -> None:
     
     # invoke
     if spell not in invoked:
-        for orb in incremental_orbs(INVOKE_RECIPES[spell]):
-            press_orb(orb)
-        keyboard.press_and_release(KEY_BINDING["invoker_invoke"])
+        for orb in INVOKE_RECIPES[spell]:
+            keyboard.press_and_release(KEY_BINDING[orb])
 
     # wait (up to WAIT_INVOKE_TIMEOUT) for GSI to confirm the spell is invoked
     deadline = time.monotonic() + WAIT_INVOKE_TIMEOUT
     while spell not in invoked and time.monotonic() < deadline:
         time.sleep(0.005)
-
+    
     # cast (special treatment t for global sun strike)
     if spell in invoked and not alt:
-        cast_key = invoked[spell] if key != "t" else f"alt+{invoked[spell]}"
+        cast_key = invoked[spell] if key != GLOBAL_SUN_STRIKE else f"alt+{invoked[spell]}"
         keyboard.press_and_release(cast_key)
 
 
