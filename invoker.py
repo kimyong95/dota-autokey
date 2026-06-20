@@ -13,13 +13,11 @@ KEY_BINDING = {
     "invoker_quas": "7", "invoker_wex": "8", "invoker_exort": "9", "invoker_invoke": 12,
 }
 
-GLOBAL_SUN_STRIKE = "e"
-
 AUTOKEY = {
     "o": "invoker_cold_snap",   "d": "invoker_forge_spirit", "f": "invoker_alacrity",
-    "w": "invoker_sun_strike",  "7": "invoker_ghost_walk",   "5": "invoker_ice_wall",
-    "4": "invoker_tornado",     "q": "invoker_emp",          "e": "invoker_sun_strike",
-    "r": "invoker_chaos_meteor","p": "invoker_deafening_blast",
+    "w": "invoker_sun_strike",  "5": "invoker_ghost_walk",   "4": "invoker_ice_wall",
+    "p": "invoker_tornado",     "q": "invoker_emp",
+    "e": "invoker_chaos_meteor","r": "invoker_deafening_blast",
 }
 
 INVOKE_RECIPES = {
@@ -68,9 +66,11 @@ def cast(trigger_key: str) -> None:
     while spell not in invoked and time.monotonic() < deadline:
         time.sleep(0.005)
     
-    # cast (special treatment t for global sun strike)
+    # cast (special case global sun strike)
     if spell in invoked and not alt:
-        cast_key = invoked[spell] if key != GLOBAL_SUN_STRIKE else f"alt+{invoked[spell]}"
+        cast_key = invoked[spell]
+        if spell == "invoker_sun_strike":
+            keyboard.press_and_release(f"alt+{cast_key}")
         keyboard.press_and_release(cast_key)
 
 
