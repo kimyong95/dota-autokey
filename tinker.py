@@ -18,7 +18,7 @@ KEY_BINDING = {
 }
 AUTOKEY = {
     "o": ["tinker_warp_grenade", "tinker_laser", "tinker_rearm"],
-    "p": ["tinker_warp_grenade", "tinker_laser", "tinker_deploy_turrets", "tinker_rearm"],
+    "p": ["tinker_deploy_turrets", "tinker_warp_grenade", "tinker_laser", "tinker_rearm"],
 }
 EXTRA_KEYS = ["2", "6"]
 
@@ -50,7 +50,7 @@ async def gsi(request: Request):
         name = abilities[aid]["name"]
         if "can_cast" in prev and name in castable:
             castable[name] = abilities[aid]["can_cast"]
-            wake.set()                   # wake immediately on GSI update
+            wake.set()
     return {}
 
 
