@@ -1,10 +1,9 @@
-import queue
 import threading
 import time
 import keyboard
+from keyboard import KEY_UP, KEY_DOWN
 import uvicorn
 from fastapi import FastAPI, Request
-from collections import Counter
 
 WAIT_INVOKE_TIMEOUT = 0.2
 SLOT_KEYS = {"ability3": "c", "ability4": "v"}   # invoked slot -> cast key
@@ -15,8 +14,8 @@ KEY_BINDING = {
 
 AUTOKEY = {
     "o": "invoker_cold_snap",   "d": "invoker_forge_spirit", "f": "invoker_alacrity",
-    "w": "invoker_sun_strike",  "5": "invoker_ghost_walk",   "4": "invoker_ice_wall",
-    "p": "invoker_tornado",     "q": "invoker_emp",
+    "w": "invoker_sun_strike",  "5": "invoker_emp",   "4": "invoker_ghost_walk",
+    "p": "invoker_tornado",     "q": "invoker_ice_wall",
     "e": "invoker_chaos_meteor","r": "invoker_deafening_blast",
 }
 
@@ -33,9 +32,9 @@ INVOKE_RECIPES = {
     "invoker_deafening_blast":   ["invoker_quas",  "invoker_wex",   "invoker_exort", "invoker_invoke"],
 }
 
-trigger_queue = queue.Queue()      # FIFO of trigger key names pending cast
 invoked = {}                       # spell -> cast key, updated by GSI
-invoked_event = threading.Event()
+pending_event = None               # latest trigger event awaiting the worker
+wake = threading.Event()           # signals the worker that pending_event is set
 
 app = FastAPI()
 
@@ -44,46 +43,48 @@ app = FastAPI()
 async def gsi(request: Request):
     global invoked
     abilities = (await request.json()).get("abilities", {})
-    new = {abilities[s]["name"]: k for s, k in SLOT_KEYS.items() if s in abilities}
-    if new != invoked:
-        invoked = new
-        invoked_event.set()
+    invoked = {abilities[s]["name"]: k for s, k in SLOT_KEYS.items() if s in abilities}
     return {}
 
 
-def cast(trigger_key: str) -> None:
-    alt = trigger_key.startswith("alt+")
-    key = trigger_key[len("alt+"):] if alt else trigger_key
-    spell = AUTOKEY[key]
-    
+def run(event):
+    spell = AUTOKEY[event.name]
+
     # invoke
-    if spell not in invoked:
+    if event.event_type == KEY_DOWN and spell not in invoked:
         for orb in INVOKE_RECIPES[spell]:
             keyboard.press_and_release(KEY_BINDING[orb])
+        deadline = time.monotonic() + WAIT_INVOKE_TIMEOUT
+        while spell not in invoked and time.monotonic() < deadline:
+            time.sleep(0.005)
 
-    # wait (up to WAIT_INVOKE_TIMEOUT) for GSI to confirm the spell is invoked
-    deadline = time.monotonic() + WAIT_INVOKE_TIMEOUT
-    while spell not in invoked and time.monotonic() < deadline:
-        time.sleep(0.005)
-    
-    # cast (special case global sun strike)
-    if spell in invoked and not alt:
-        cast_key = invoked[spell]
-        if spell == "invoker_sun_strike":
-            keyboard.press_and_release(f"alt+{cast_key}")
-        keyboard.press_and_release(cast_key)
+    if keyboard.is_pressed("alt"):
+        return
+
+    # cast
+    cast_key = invoked.get(spell)
+    if cast_key:
+        if event.event_type == KEY_DOWN:
+            keyboard.press(cast_key)
+        elif event.event_type == KEY_UP:
+            keyboard.release(cast_key)
 
 
 def on_trigger(event):
-    if event.event_type == keyboard.KEY_DOWN:
-        key = f"alt+{event.name}" if keyboard.is_pressed("alt") else event.name
-        trigger_queue.put(key)
+    global pending_event
+    pending_event = event          # hand off immediately; the hook must not block
+    wake.set()
 
 
 def worker():
+    global pending_event
     while True:
-        trigger_key = trigger_queue.get()
-        cast(trigger_key)
+        wake.wait()
+        wake.clear()        # clear before taking, so a set() during run() is kept
+        if pending_event is not None:
+            run(pending_event)
+            pending_event = None
+
 
 if __name__ == "__main__":
     for trigger_key in AUTOKEY:
