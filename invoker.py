@@ -81,9 +81,10 @@ def worker():
     while True:
         wake.wait()
         wake.clear()        # clear before taking, so a set() during run() is kept
-        if pending_event is not None:
-            run(pending_event)
-            pending_event = None
+        event = pending_event
+        pending_event = None
+        if event is not None:
+            run(event)
 
 
 if __name__ == "__main__":
