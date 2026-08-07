@@ -14,9 +14,9 @@ KEY_BINDING = {
 
 AUTOKEY = {
     "o": "invoker_cold_snap",   "d": "invoker_forge_spirit", "f": "invoker_alacrity",
-    "w": "invoker_sun_strike",  "5": "invoker_emp",   "4": "invoker_ghost_walk",
-    "p": "invoker_tornado",     "q": "invoker_ice_wall",
-    "e": "invoker_chaos_meteor","r": "invoker_deafening_blast",
+    "e": "invoker_sun_strike",  "q": "invoker_emp",   "space": "invoker_ghost_walk",
+    "p": "invoker_tornado",     "w": "invoker_ice_wall",
+    "r": "invoker_chaos_meteor","t": "invoker_deafening_blast",
 }
 
 INVOKE_RECIPES = {
@@ -32,9 +32,28 @@ INVOKE_RECIPES = {
     "invoker_deafening_blast":   ["invoker_quas",  "invoker_wex",   "invoker_exort", "invoker_invoke"],
 }
 
+class DedupeQueue:
+    """FIFO queue that drops items already waiting in it."""
+
+    def __init__(self):
+        self.items = []
+        self.cond = threading.Condition()
+
+    def put(self, item):
+        with self.cond:
+            if item not in self.items:
+                self.items.append(item)
+                self.cond.notify()
+
+    def get(self):
+        with self.cond:
+            while not self.items:
+                self.cond.wait()
+            return self.items.pop(0)
+
+
 invoked = {}                       # spell -> cast key, updated by GSI
-pending_event = None               # latest trigger event awaiting the worker
-wake = threading.Event()           # signals the worker that pending_event is set
+event_queue = DedupeQueue()        # trigger events awaiting the worker
 
 app = FastAPI()
 
@@ -47,11 +66,11 @@ async def gsi(request: Request):
     return {}
 
 
-def run(event):
-    spell = AUTOKEY[event.name]
+def run(key, event_type):
+    spell = AUTOKEY[key]
 
     # invoke
-    if event.event_type == KEY_DOWN and spell not in invoked:
+    if event_type == KEY_DOWN and spell not in invoked:
         for orb in INVOKE_RECIPES[spell]:
             keyboard.press_and_release(KEY_BINDING[orb])
         deadline = time.monotonic() + WAIT_INVOKE_TIMEOUT
@@ -64,27 +83,20 @@ def run(event):
     # cast
     cast_key = invoked.get(spell)
     if cast_key:
-        if event.event_type == KEY_DOWN:
+        if event_type == KEY_DOWN:
             keyboard.press(cast_key)
-        elif event.event_type == KEY_UP:
+        elif event_type == KEY_UP:
             keyboard.release(cast_key)
 
 
 def on_trigger(event):
-    global pending_event
-    pending_event = event          # hand off immediately; the hook must not block
-    wake.set()
+    # hand off immediately; the hook must not block
+    event_queue.put((event.name, event.event_type))
 
 
 def worker():
-    global pending_event
     while True:
-        wake.wait()
-        wake.clear()        # clear before taking, so a set() during run() is kept
-        event = pending_event
-        pending_event = None
-        if event is not None:
-            run(event)
+        run(*event_queue.get())
 
 
 if __name__ == "__main__":
