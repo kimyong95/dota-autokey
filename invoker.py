@@ -14,9 +14,9 @@ KEY_BINDING = {
 
 AUTOKEY = {
     "o": "invoker_cold_snap",   "d": "invoker_forge_spirit", "f": "invoker_alacrity",
-    "e": "invoker_sun_strike",  "q": "invoker_emp",   "space": "invoker_ghost_walk",
-    "p": "invoker_tornado",     "w": "invoker_ice_wall",
-    "r": "invoker_chaos_meteor","t": "invoker_deafening_blast",
+    "e": "invoker_sun_strike",  "q": "invoker_emp",   "4": "invoker_ghost_walk",
+    "5": "invoker_tornado",     "w": "invoker_ice_wall",
+    "r": "invoker_chaos_meteor","p": "invoker_deafening_blast",
 }
 
 INVOKE_RECIPES = {
