@@ -7,20 +7,32 @@ from fastapi import FastAPI, Request
 from utils import updated_abilities
 
 WAIT_INVOKE_TIMEOUT = 0.2
+WAIT_CAST_TIMEOUT = 0.2
 SLOT_KEYS = {"ability3": "c", "ability4": "v"}   # invoked slot -> cast key
+
+TORNADO_TRAVEL_SPEED = 1000     # units/s, flat
+TORNADO_AIRTIME_MULTIPLIER = 0.2
+
+DELAY_TIME = {                  # spell -> seconds between cast and impact
+    "invoker_sun_strike": 1.7,
+    "invoker_chaos_meteor": 1.3,
+}
 
 KEY_BINDING = {
     "invoker_quas": "j", "invoker_wex": "k", "invoker_exort": "l", "invoker_invoke": 12,
 }
 
 AUTOKEY = {
-    "o": "invoker_cold_snap",   "d": "invoker_forge_spirit", "f": "invoker_alacrity",
-    "e": "invoker_sun_strike",  "q": "invoker_emp",   "4": "invoker_ghost_walk",
-    "5": "invoker_tornado",     "w": "invoker_ice_wall",
-    "r": "invoker_chaos_meteor","p": "invoker_deafening_blast",
+    "q": "invoker_ice_wall",
+    "w": "invoker_sun_strike",
+    "e": "invoker_chaos_meteor",
+    "r": "invoker_deafening_blast",
+    "d": "invoker_forge_spirit", "f": "invoker_alacrity",
+    "o": "invoker_cold_snap", "p": "invoker_tornado",
+    "4": "invoker_emp", "5": "invoker_ghost_walk",
     "7": ["invoker_tornado", "invoker_emp"],
     "8": ["invoker_tornado", "invoker_sun_strike", "invoker_chaos_meteor", "invoker_deafening_blast"],
-    "9": ["invoker_tornado", "invoker_ice_wall", "invoker_sun_strike", "invoker_chaos_meteor", "invoker_deafening_blast"],
+    "9": ["invoker_cold_snap", "invoker_emp", "invoker_ice_wall", "invoker_sun_strike", "invoker_chaos_meteor", "invoker_deafening_blast"],
 }
 
 INVOKE_RECIPES = {
@@ -58,20 +70,50 @@ class DedupeQueue:
 
 invoked = {}                       # spell -> cast key, updated by GSI
 ready_at = {}                      # spell -> monotonic time it comes off cooldown
+tornado_air_time = 0.0             # how long this tornado holds its victim up
+tornado_max_land_time = 0.0        # monotonic time a max-range tornado's victim lands
 event_queue = DedupeQueue()        # trigger events awaiting the worker
 
 app = FastAPI()
 
 
-def track_cooldown(updated):
+def track_cooldown(abilities, prev_abilities):
     # the tick where "cooldown" changed is the instant the reported whole-second
     # value became true, so now + cooldown is accurate
     now = time.monotonic()
+    updated = updated_abilities(abilities, prev_abilities, "cooldown")
+    if any(
+        "name" not in prev_abilities[slot]                               # not a slot swap
+        and prev_abilities[slot]["cooldown"] - ability["cooldown"] > 1   # cooldown jumped down
+        for slot, ability in updated.items()
+    ):
+        ready_at.clear()    # refresher: also frees the 8 spells GSI never shows us
     for ability in updated.values():
         ready_at[ability["name"]] = now + ability["cooldown"]
 
 def castable(spell):
     return time.monotonic() >= ready_at.get(spell, 0)   # unseen spell -> assume up
+
+
+def tornado_times(abilities):
+    # travel distance scales with Wex, the lift ("air time") with Quas
+    levels = {ability["name"]: ability["level"] for ability in abilities.values()}
+    quas, wex = levels.get("invoker_quas", 0), levels.get("invoker_wex", 0)
+    if not quas or not wex:
+        return 0.0, 0.0
+    travel_time = (1500 + 300 * (wex - 1)) / TORNADO_TRAVEL_SPEED
+    air_time = 1.2 + TORNADO_AIRTIME_MULTIPLIER * (quas - 1)
+
+    return travel_time, air_time
+
+
+def track_tornado_land_time(abilities, prev_abilities):
+    # can_cast is a bool, so "changed this tick and is now False" is the True -> False edge
+    global tornado_air_time, tornado_max_land_time
+    for ability in updated_abilities(abilities, prev_abilities, "can_cast").values():
+        if ability["name"] == "invoker_tornado" and not ability["can_cast"]:
+            travel_time, tornado_air_time = tornado_times(abilities)
+            tornado_max_land_time = time.monotonic() + travel_time + tornado_air_time
 
 
 @app.post("/")
@@ -81,7 +123,8 @@ async def gsi(request: Request):
     abilities = payload.get("abilities", {})
     prev_abilities = payload.get("previously", {}).get("abilities", {})
     invoked = {abilities[slot]["name"]: cast_key for slot, cast_key in SLOT_KEYS.items() if slot in abilities}
-    track_cooldown(updated_abilities(abilities, prev_abilities, "cooldown"))
+    track_cooldown(abilities, prev_abilities)
+    track_tornado_land_time(abilities, prev_abilities)
     return {}
 
 def get_spell(key):
@@ -91,14 +134,39 @@ def get_spell(key):
     return spell
 
 
+def wait_for_tornado_land(spell):
+    # hold the spell back so its impact coincides with the victim hitting the ground; this
+    # call is the moment the tornado is assumed to have caught them, so they are up for a
+    # full air_time from now -- but never past when a max-range tornado would have set them
+    # down, which is also what zeroes the wait when no tornado is in flight
+    delay = DELAY_TIME.get(spell)
+    if delay is None:
+        return
+    now = time.monotonic()
+    wait = min(now + tornado_air_time, tornado_max_land_time) - delay - now
+    if wait > 0:
+        time.sleep(wait)
+
+
+def wait_for_casted(spell):
+    # the cast only counts once GSI reports the spell on cooldown; hold the worker there so
+    # the next queued event cannot invoke over a cast the game has not registered yet
+    deadline = time.monotonic() + WAIT_CAST_TIMEOUT
+    while castable(spell) and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+
 def cast_spell(spell, event_type):
+
     cast_key = invoked.get(spell)
     if cast_key is None:
         return
     if event_type == KEY_DOWN:
         keyboard.press(cast_key)
     elif event_type == KEY_UP:
+        wait_for_tornado_land(spell)
         keyboard.release(cast_key)
+        wait_for_casted(spell)
 
 
 def run(key, event_type):

@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request
 from pynput import keyboard as pk
 import time
 import threading
+from utils import updated_abilities
 
 LOOP_INTERVAL = 0.03
 
@@ -43,13 +44,10 @@ async def gsi(request: Request):
     payload = await request.json()
     abilities = payload.get("abilities", {})
     prev_abilities = payload.get("previously", {}).get("abilities", {})
-    if not isinstance(prev_abilities, dict):
-        return {}
-    
-    for aid, prev in prev_abilities.items():
-        name = abilities[aid]["name"]
-        if "can_cast" in prev and name in castable:
-            castable[name] = abilities[aid]["can_cast"]
+
+    for ability in updated_abilities(abilities, prev_abilities, "can_cast").values():
+        if ability["name"] in castable:
+            castable[ability["name"]] = ability["can_cast"]
             wake.set()
     return {}
 
