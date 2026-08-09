@@ -30,9 +30,7 @@ AUTOKEY = {
     "d": "invoker_forge_spirit", "f": "invoker_alacrity",
     "o": "invoker_cold_snap", "p": "invoker_tornado",
     "4": "invoker_emp", "5": "invoker_ghost_walk",
-    "7": ["invoker_tornado", "invoker_emp"],
-    "8": ["invoker_tornado", "invoker_sun_strike", "invoker_chaos_meteor", "invoker_deafening_blast"],
-    "9": ["invoker_cold_snap", "invoker_emp", "invoker_ice_wall", "invoker_sun_strike", "invoker_chaos_meteor", "invoker_deafening_blast"],
+    "7": ["invoker_cold_snap", "invoker_emp", "invoker_ice_wall", "invoker_chaos_meteor", "invoker_sun_strike", "invoker_deafening_blast"],
 }
 
 INVOKE_RECIPES = {
