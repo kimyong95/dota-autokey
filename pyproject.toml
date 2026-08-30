@@ -8,3 +8,6 @@ dependencies = [
     "pynput",
     "uvicorn[standard]",
 ]
+
+[tool.uv]
+python-preference = "only-managed"
