@@ -40,15 +40,15 @@ def main() -> int:
     args = parser.parse_args()
 
     if not args.cfg_file.is_file():
-        print(f"error: config file not found: {args.cfg_file}", file=sys.stderr)
+        print(f"Error: config file not found: {args.cfg_file}", file=sys.stderr)
         return 1
 
-    print("searching for Dota 2...")
+    print("Searching for Dota 2...")
     dota = find_dota()
     if dota is None:
-        print("error: could not find a 'dota 2 beta' folder", file=sys.stderr)
+        print("Error: could not find a 'dota 2 beta' folder", file=sys.stderr)
         return 1
-    print(f"found Dota 2: {dota}")
+    print(f"Found Dota 2: {dota}")
 
     target = dota / GSI_SUBPATH / args.cfg_file.name
     if args.dry_run:
@@ -57,7 +57,8 @@ def main() -> int:
 
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(args.cfg_file, target)
-    print(f"installed: {target}")
+    print(f"Installed: {target}")
+    print(f"Remember to add -gamestateintegration to Dota 2 launch option.")
     return 0
 
 
