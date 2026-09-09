@@ -1,9 +1,12 @@
+import argparse
 import threading
 import time
 import keyboard
 from keyboard import KEY_UP, KEY_DOWN
 import uvicorn
 from fastapi import FastAPI, Request
+
+import invoker_overlay
 from utils import updated_abilities
 
 WAIT_INVOKE_TIMEOUT = 0.2
@@ -45,6 +48,8 @@ INVOKE_RECIPES = {
     "invoker_chaos_meteor":      ["invoker_wex",   "invoker_exort", "invoker_exort", "invoker_invoke"],
     "invoker_deafening_blast":   ["invoker_quas",  "invoker_wex",   "invoker_exort", "invoker_invoke"],
 }
+
+CAST_IMEDIATELY = set(INVOKE_RECIPES) - {"invoker_ice_wall", "invoker_sun_strike", "invoker_tornado"}
 
 class DedupeQueue:
     """FIFO queue that drops items already waiting in it."""
@@ -93,6 +98,10 @@ def castable(spell):
     return time.monotonic() >= ready_at.get(spell, 0)   # unseen spell -> assume up
 
 
+def remaining(spell):
+    return max(0.0, ready_at.get(spell, 0) - time.monotonic())   # unseen spell -> ready
+
+
 def tornado_times(abilities):
     # travel distance scales with Wex, the lift ("air time") with Quas
     levels = {ability["name"]: ability["level"] for ability in abilities.values()}
@@ -132,40 +141,17 @@ def get_spell(key):
     return spell
 
 
-def wait_for_tornado_land(spell):
-    # hold the spell back so its impact coincides with the victim hitting the ground; this
-    # call is the moment the tornado is assumed to have caught them, so they are up for a
-    # full air_time from now -- but never past when a max-range tornado would have set them
-    # down, which is also what zeroes the wait when no tornado is in flight
-    delay = DELAY_TIME.get(spell)
-    if delay is None:
-        return
-    now = time.monotonic()
-    wait = min(now + tornado_air_time, tornado_max_land_time) - delay - now
-    if wait > 0:
-        time.sleep(wait)
-
-
-def wait_for_casted(spell):
-    # the cast only counts once GSI reports the spell on cooldown; hold the worker there so
-    # the next queued event cannot invoke over a cast the game has not registered yet
-    deadline = time.monotonic() + WAIT_CAST_TIMEOUT
-    while castable(spell) and time.monotonic() < deadline:
-        time.sleep(0.005)
-
-
 def cast_spell(spell, event_type):
 
     cast_key = invoked.get(spell)
     if cast_key is None:
         return
-    if event_type == KEY_DOWN:
-        wait_for_tornado_land(spell)
+    if spell in CAST_IMEDIATELY and event_type == KEY_DOWN:
+        keyboard.press_and_release(cast_key)
+    elif event_type == KEY_DOWN:
         keyboard.press(cast_key)
-        wait_for_casted(spell)
     elif event_type == KEY_UP:
         keyboard.release(cast_key)
-        wait_for_casted(spell)
 
 
 def run(key, event_type):
@@ -198,7 +184,19 @@ def worker():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--overlay", action="store_true", help="show the cooldown overlay")
+    args = parser.parse_args()
+
     for trigger_key in AUTOKEY:
         keyboard.hook_key(trigger_key, on_trigger, suppress=True)
     threading.Thread(target=worker, daemon=True).start()
-    uvicorn.run(app, host="127.0.0.1", port=3000, log_level="warning")
+
+    if not args.overlay:
+        uvicorn.run(app, host="127.0.0.1", port=3000, log_level="warning")
+    else:
+        # Qt needs the main thread, so uvicorn moves off it
+        threading.Thread(target=uvicorn.run, args=(app,),
+                         kwargs={"host": "127.0.0.1", "port": 3000, "log_level": "warning"},
+                         daemon=True).start()
+        invoker_overlay.start(remaining)
