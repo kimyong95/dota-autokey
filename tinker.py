@@ -4,7 +4,6 @@ import uvicorn
 from fastapi import FastAPI, Request
 from pynput import keyboard as pk
 import time
-import threading
 from utils import updated_abilities
 
 LOOP_INTERVAL = 0.03
@@ -22,11 +21,6 @@ AUTOKEY = {
     "p": ["tinker_deploy_turrets", "tinker_warp_grenade", "tinker_laser", "tinker_rearm"],
 }
 EXTRA_KEYS = ["2", "6"]
-
-IGNORE_KEYS = {
-    t: set(AUTOKEY) | {KEY_BINDING[s] for s in spells} | set(EXTRA_KEYS)
-    for t, spells in AUTOKEY.items()
-}
 
 castable = {a: True for combo in AUTOKEY.values() for a in combo}
 

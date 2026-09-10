@@ -1,4 +1,3 @@
-import argparse
 import threading
 import time
 import keyboard
@@ -10,16 +9,7 @@ import invoker_overlay
 from utils import updated_abilities
 
 WAIT_INVOKE_TIMEOUT = 0.2
-WAIT_CAST_TIMEOUT = 0.2
 SLOT_KEYS = {"ability3": "c", "ability4": "v"}   # invoked slot -> cast key
-
-TORNADO_TRAVEL_SPEED = 1000     # units/s, flat
-TORNADO_AIRTIME_MULTIPLIER = 0.2
-
-DELAY_TIME = {                  # spell -> seconds between cast and impact
-    "invoker_sun_strike": 1.7,
-    "invoker_chaos_meteor": 1.3,
-}
 
 KEY_BINDING = {
     "invoker_quas": "j", "invoker_wex": "k", "invoker_exort": "l", "invoker_invoke": 12,
@@ -73,8 +63,8 @@ class DedupeQueue:
 
 invoked = {}                       # spell -> cast key, updated by GSI
 ready_at = {}                      # spell -> monotonic time it comes off cooldown
-tornado_air_time = 0.0             # how long this tornado holds its victim up
-tornado_max_land_time = 0.0        # monotonic time a max-range tornado's victim lands
+cooldown_totals = {}               # duration observed at the start of each cooldown
+state_lock = threading.Lock()
 event_queue = DedupeQueue()        # trigger events awaiting the worker
 
 app = FastAPI()
@@ -91,36 +81,35 @@ def track_cooldown(abilities, prev_abilities):
         for slot, ability in updated.items()
     ):
         ready_at.clear()    # refresher: also frees the 8 spells GSI never shows us
+        cooldown_totals.clear()
     for ability in updated.values():
-        ready_at[ability["name"]] = now + ability["cooldown"]
+        spell, left = ability["name"], ability["cooldown"]
+        previous = max(0.0, ready_at.get(spell, 0) - now)
+        if left <= 0:
+            cooldown_totals.pop(spell, None)
+        elif spell not in cooldown_totals or left > previous + 0.5:
+            cooldown_totals[spell] = left
+        ready_at[spell] = now + left
 
 def castable(spell):
     return time.monotonic() >= ready_at.get(spell, 0)   # unseen spell -> assume up
 
 
-def remaining(spell):
-    return max(0.0, ready_at.get(spell, 0) - time.monotonic())   # unseen spell -> ready
+def overlay_state():
+    """One consistent snapshot: {spell: (remaining seconds, remaining fraction, invoked)}.
 
-
-def tornado_times(abilities):
-    # travel distance scales with Wex, the lift ("air time") with Quas
-    levels = {ability["name"]: ability["level"] for ability in abilities.values()}
-    quas, wex = levels.get("invoker_quas", 0), levels.get("invoker_wex", 0)
-    if not quas or not wex:
-        return 0.0, 0.0
-    travel_time = (1500 + 300 * (wex - 1)) / TORNADO_TRAVEL_SPEED
-    air_time = 1.2 + TORNADO_AIRTIME_MULTIPLIER * (quas - 1)
-
-    return travel_time, air_time
-
-
-def track_tornado_land_time(abilities, prev_abilities):
-    # can_cast is a bool, so "changed this tick and is now False" is the True -> False edge
-    global tornado_air_time, tornado_max_land_time
-    for ability in updated_abilities(abilities, prev_abilities, "can_cast").values():
-        if ability["name"] == "invoker_tornado" and not ability["can_cast"]:
-            travel_time, tornado_air_time = tornado_times(abilities)
-            tornado_max_land_time = time.monotonic() + travel_time + tornado_air_time
+    GSI only reports remaining time, so a cooldown first seen midway uses its
+    observed duration. Subsequent snapshots never restart the sweep.
+    """
+    with state_lock:
+        now = time.monotonic()
+        result = {}
+        for spell in INVOKE_RECIPES:
+            left = max(0.0, ready_at.get(spell, 0) - now)
+            total = cooldown_totals.get(spell, left)
+            result[spell] = (left, min(1.0, left / total) if total > 0 else 0,
+                             spell in invoked)
+        return result
 
 
 @app.post("/")
@@ -129,9 +118,9 @@ async def gsi(request: Request):
     payload = await request.json()
     abilities = payload.get("abilities", {})
     prev_abilities = payload.get("previously", {}).get("abilities", {})
-    invoked = {abilities[slot]["name"]: cast_key for slot, cast_key in SLOT_KEYS.items() if slot in abilities}
-    track_cooldown(abilities, prev_abilities)
-    track_tornado_land_time(abilities, prev_abilities)
+    with state_lock:
+        invoked = {abilities[slot]["name"]: cast_key for slot, cast_key in SLOT_KEYS.items() if slot in abilities}
+        track_cooldown(abilities, prev_abilities)
     return {}
 
 def get_spell(key):
@@ -184,19 +173,12 @@ def worker():
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--overlay", action="store_true", help="show the cooldown overlay")
-    args = parser.parse_args()
-
     for trigger_key in AUTOKEY:
         keyboard.hook_key(trigger_key, on_trigger, suppress=True)
     threading.Thread(target=worker, daemon=True).start()
 
-    if not args.overlay:
-        uvicorn.run(app, host="127.0.0.1", port=3000, log_level="warning")
-    else:
-        # Qt needs the main thread, so uvicorn moves off it
-        threading.Thread(target=uvicorn.run, args=(app,),
-                         kwargs={"host": "127.0.0.1", "port": 3000, "log_level": "warning"},
-                         daemon=True).start()
-        invoker_overlay.start(remaining)
+    # Qt stays on the main thread so can toggle the overlay at any time.
+    threading.Thread(target=uvicorn.run, args=(app,),
+                     kwargs={"host": "127.0.0.1", "port": 3000, "log_level": "warning"},
+                     daemon=True).start()
+    invoker_overlay.start(overlay_state)
