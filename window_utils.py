@@ -1,44 +1,40 @@
 """Physical-pixel display bounds and overlay placement on Windows."""
 
-import ctypes
 import math
 
+import win32api
+import win32con
+import win32gui
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import QWidget
-from ctypes import wintypes
-
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-user32.GetSystemMetrics.argtypes = [ctypes.c_int]
-user32.GetSystemMetrics.restype = ctypes.c_int
-user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int,
-                                ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT]
-user32.SetWindowPos.restype = wintypes.BOOL
-user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-user32.FindWindowW.restype = wintypes.HWND
-for name in ("GetWindowRect", "GetClientRect"):
-    getattr(user32, name).argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
-    getattr(user32, name).restype = wintypes.BOOL
 
 
 def hud_surface():
-    """Borderless presentation bounds and render size, which Windows may scale."""
-    window = user32.FindWindowW(None, "Dota 2")
-    frame, client = wintypes.RECT(), wintypes.RECT()
-    if (window and user32.GetWindowRect(window, ctypes.byref(frame))
-            and user32.GetClientRect(window, ctypes.byref(client))
-            and client.right > 0 and client.bottom > 0):
-        return ((frame.left, frame.top, frame.right - frame.left,
-                 frame.bottom - frame.top), (client.right, client.bottom))
+    """Presented client bounds and render size, which Windows may scale.
+
+    The HUD lives in the client area, so the window frame is the wrong rectangle:
+    a bordered or maximised Dota window carries invisible resize borders that would
+    push the overlay down and stretch it. ClientToScreen maps the rendered surface
+    onto the screen through both the border inset and any DPI virtualisation.
+    """
+    try:
+        window = win32gui.FindWindow(None, "Dota 2")
+        client = win32gui.GetClientRect(window)
+        if client[2] > 0 and client[3] > 0:
+            left, top = win32gui.ClientToScreen(window, (0, 0))
+            right, bottom = win32gui.ClientToScreen(window, (client[2], client[3]))
+            return (left, top, right - left, bottom - top), (client[2], client[3])
+    except win32gui.error:      # no Dota window, or it closed between the calls
+        pass
     # QApplication enables per-monitor DPI awareness, so these are physical pixels.
-    width, height = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-    return (0, 0, width, height), (width, height)
+    size = (win32api.GetSystemMetrics(0), win32api.GetSystemMetrics(1))
+    return (0, 0, *size), size
 
 
 def place_overlay(window, bounds):
     # Physical positioning avoids fractional-DPI rounding. Never take keyboard focus.
-    if not user32.SetWindowPos(window, wintypes.HWND(-1), *bounds, 0x0010):
-        raise ctypes.WinError(ctypes.get_last_error())
+    win32gui.SetWindowPos(window, win32con.HWND_TOPMOST, *bounds, win32con.SWP_NOACTIVATE)
 
 
 class LogicalWindow(QWidget):
@@ -56,10 +52,9 @@ class LogicalWindow(QWidget):
         self.last_geometry = None
         self.resize(*self.pixel_size)
 
-    def follow_bottom(self, offset, left=0):
+    def follow_bottom(self, offset):
         """Keep the window's bottom edge `offset` design units above the HUD bottom."""
         self.bottom_offset = offset
-        self.left_offset = left
         if not hasattr(self, 'geometry_timer'):
             self.geometry_timer = QTimer(self)
             self.geometry_timer.timeout.connect(self.align_to_display)
@@ -81,8 +76,7 @@ class LogicalWindow(QWidget):
         self.resize(*(math.ceil(side / dpi) for side in self.pixel_size))
         panel_width, panel_height = self.pixel_size
         place_overlay(int(self.winId()),
-                      (x + round(self.left_offset * scale_x),
-                       y + height - round(self.bottom_offset * scale_y) - panel_height,
+                      (x, y + height - round(self.bottom_offset * scale_y) - panel_height,
                        panel_width, panel_height))
         self.last_geometry = bounds, render_size, dpi
         self.update()

@@ -1,12 +1,14 @@
 """Invoker panel layout, painting, refresh, and Ctrl+= visibility toggle."""
 import math
 import signal
-import urllib.request
+from functools import lru_cache
 from pathlib import Path
+import httpx
 import keyboard
-from PySide6.QtCore import QRectF, Qt, QTimer, Signal, Slot
-from PySide6.QtGui import (QColor, QFont, QFontDatabase, QLinearGradient,
-                           QPainter, QPainterPath, QPen, QPixmap)
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal, Slot
+from PySide6.QtGui import (QColor, QImage, QLinearGradient, QPainter, QPen,
+                           QPixmap)
 from PySide6.QtWidgets import QApplication
 from window_utils import LogicalWindow
 
@@ -17,6 +19,12 @@ SIZE, PAD, FRAME = 76, 8, 4
 PANEL_TOP = QColor(30, 36, 39, 155)
 PANEL_BOTTOM = QColor(17, 22, 25, 185)
 COOLDOWN_TINT = QColor(0, 0, 0, 185)
+# Cooldown numbers are rasterised by Pillow; tune the shadow with these four.
+NUMBER_BOX = (88, 64)       # design units, both even so the centred blit stays crisp
+NUMBER_FILL = (242, 242, 237, 255)
+SHADOW_FILL, SHADOW_SPREAD, SHADOW_BLUR, SHADOW_OFFSET = (0, 0, 0, 235), 2, 2, (0, 0)
+FONT_FILE = ASSETS / "radiance-regular.otf"
+NUMBER_FONT = ImageFont.truetype(str(FONT_FILE) if FONT_FILE.exists() else "arialbd.ttf", 38)
 
 # Autokey trigger keys in panel order; invoke has none, and sits bottom-left.
 # [q][w][e][r][o][p]
@@ -36,12 +44,17 @@ LAYOUT = {
 }
 
 
-def load_font(path, size):
-    font_id = QFontDatabase.addApplicationFont(str(path))
-    families = QFontDatabase.applicationFontFamilies(font_id)
-    font = QFont(families[0] if families else "Arial")
-    font.setPixelSize(size)
-    return font
+@lru_cache(maxsize=64)
+def number_image(text):
+    """Rasterise one cooldown number, centred in NUMBER_BOX over a soft shadow."""
+    center = (NUMBER_BOX[0] / 2, NUMBER_BOX[1] / 2)
+    image = Image.new("RGBA", NUMBER_BOX)
+    ImageDraw.Draw(image).text((center[0] + SHADOW_OFFSET[0], center[1] + SHADOW_OFFSET[1]),
+                               text, SHADOW_FILL, NUMBER_FONT, anchor="mm",
+                               stroke_width=SHADOW_SPREAD, stroke_fill=SHADOW_FILL)
+    image = image.filter(ImageFilter.GaussianBlur(SHADOW_BLUR))
+    ImageDraw.Draw(image).text(center, text, NUMBER_FILL, NUMBER_FONT, anchor="mm")
+    return QImage(image.tobytes(), *NUMBER_BOX, QImage.Format_RGBA8888).copy()
 
 
 def draw_panel(painter, rect):
@@ -72,18 +85,15 @@ def draw_spell(painter, slot, icon, left=0, fraction=0, invoked=False, frame=4):
         radius = math.hypot(rect.width(), rect.height()) / 2
         circle = QRectF(rect.center().x() - radius, rect.center().y() - radius,
                         2 * radius, 2 * radius)
-        shadow = QPainterPath(rect.center())
-        shadow.arcTo(circle, 90, 360 * fraction)
-        shadow.closeSubpath()
         painter.save()
         painter.setClipRect(rect)
-        painter.fillPath(shadow, COOLDOWN_TINT)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(COOLDOWN_TINT)
+        painter.drawPie(circle, 90 * 16, round(360 * 16 * fraction))
         painter.restore()
-        text = str(math.ceil(left))
-        painter.setPen(QColor(0, 0, 0, 230))
-        painter.drawText(rect.translated(2, 2), Qt.AlignCenter, text)
-        painter.setPen(QColor("#f2f2ed"))
-        painter.drawText(rect, Qt.AlignCenter, text)
+        number = number_image(str(math.ceil(left)))
+        painter.drawImage(rect.center() - QPointF(number.width() / 2,
+                                                  number.height() / 2), number)
     painter.setPen(QPen(QColor(0, 0, 0, 125), 2))
     painter.setBrush(Qt.NoBrush)
     painter.drawRect(rect.adjusted(1, 1, -1, -1))
@@ -113,7 +123,6 @@ class Overlay(LogicalWindow):
         }
         self.prepare_assets()
         self.icons = {spell: QPixmap(str(ASSETS / f"{spell}.png")) for spell in LAYOUT}
-        self.number_font = load_font(ASSETS / "radiance-regular.otf", 38)
         self.toggle_requested.connect(self.toggle, Qt.QueuedConnection)
         self.follow_bottom(QUICK_BUY_TOP)
         timer = QTimer(self)
@@ -129,9 +138,7 @@ class Overlay(LogicalWindow):
             if target.exists():
                 continue
             url = f"https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/abilities/{spell}.png"
-            with urllib.request.urlopen(url, timeout=15) as response:
-                data = response.read()
-            target.write_bytes(data)
+            target.write_bytes(httpx.get(url, timeout=15).raise_for_status().content)
 
     @Slot()
     def toggle(self):
@@ -149,8 +156,7 @@ class Overlay(LogicalWindow):
 
     def paintEvent(self, event):
         painter = self.logical_painter()
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.setFont(self.number_font)
+        painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         draw_panel(painter, self.design_rect)
         for spell, rect in self.spell_rects.items():
             draw_spell(painter, rect, self.icons[spell], *self.state.get(spell, (0, 0, False)), frame=FRAME)
