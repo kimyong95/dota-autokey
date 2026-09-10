@@ -8,17 +8,29 @@ import keyboard
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (QColor, QImage, QLinearGradient, QPainter, QPen,
-                           QPixmap)
+                           QPixmap, QPolygonF)
 from PySide6.QtWidgets import QApplication
 from window_utils import LogicalWindow
 
 ASSETS = Path(__file__).parent / "assets"
 # 4K design units; the bottom edge touches the left quick-buy panel.
 PANEL_WIDTH, QUICK_BUY_TOP = 582, 208
-SIZE, PAD, FRAME = 76, 8, 4
+# The frame is a black EDGE around a raised BEVEL; the slot stays 84 units wide,
+# so widening it from 4 to 6 takes those units off the artwork instead.
+SIZE, PAD, EDGE, BEVEL = 72, 8, 3, 3
+FRAME = EDGE + BEVEL
 PANEL_TOP = QColor(30, 36, 39, 155)
 PANEL_BOTTOM = QColor(17, 22, 25, 185)
 COOLDOWN_TINT = QColor(0, 0, 0, 185)
+# Sampled off a 4K Dota ability slot: a near-black edge around a raised frame that
+# runs bright silver on top, mid grey down the left, darker right, darkest bottom.
+SLOT_EDGE = QColor(23, 27, 30, 240)
+SLOT_EDGE_BOTTOM = QColor(15, 18, 20, 240)
+# Outer and inner colour of each edge, clockwise from the top.
+BEVEL_EDGES = ((QColor(138, 146, 153), QColor(107, 116, 124)),
+               (QColor(43, 51, 59), QColor(58, 66, 74)),
+               (QColor(35, 42, 49), QColor(35, 42, 49)),
+               (QColor(85, 94, 102), QColor(70, 79, 87)))
 # Cooldown numbers are rasterised by Pillow; tune the shadow with these four.
 NUMBER_BOX = (88, 64)       # design units, both even so the centred blit stays crisp
 NUMBER_FILL = (242, 242, 237, 255)
@@ -68,16 +80,37 @@ def draw_panel(painter, rect):
                      QColor(0, 0, 0, 110))
 
 
-def draw_spell(painter, slot, icon, left=0, fraction=0, invoked=False, frame=4):
+def draw_bevel(painter, outer, width, colours):
+    """Fill the ring inside `outer` with one shaded edge per side, mitred at the corners.
+
+    Mitres are drawn unantialiased: the diagonals abut exactly, and a feathered join
+    would leave a hairline of panel showing through where two edges meet.
+    """
+    inner = outer.adjusted(width, width, -width, -width)
+    edges = ((outer.topLeft(), outer.topRight(), inner.topRight(), inner.topLeft()),
+             (outer.topRight(), outer.bottomRight(), inner.bottomRight(), inner.topRight()),
+             (outer.bottomRight(), outer.bottomLeft(), inner.bottomLeft(), inner.bottomRight()),
+             (outer.bottomLeft(), outer.topLeft(), inner.topLeft(), inner.bottomLeft()))
     painter.save()
-    # Grey upper bevel, dark lower edge, and a thin recessed artwork outline.
-    painter.fillRect(slot, QColor(5, 8, 10, 230))
-    bevel = QLinearGradient(0, slot.top(), 0, slot.bottom())
-    bevel.setColorAt(0, QColor(167, 174, 174, 245))
-    bevel.setColorAt(0.45, QColor(102, 110, 113, 240))
-    bevel.setColorAt(1, QColor(48, 54, 57, 240))
-    painter.fillRect(slot.adjusted(2, 2, -2, -2), bevel)
-    rect = slot.adjusted(frame, frame, -frame, -frame)
+    painter.setRenderHint(QPainter.Antialiasing, False)
+    painter.setPen(Qt.NoPen)
+    for points, (outer_colour, inner_colour) in zip(edges, colours):
+        shade = QLinearGradient((points[0] + points[1]) / 2, (points[2] + points[3]) / 2)
+        shade.setColorAt(0, outer_colour)
+        shade.setColorAt(1, inner_colour)
+        painter.setBrush(shade)
+        painter.drawPolygon(QPolygonF(points))
+    painter.restore()
+
+
+def draw_spell(painter, slot, icon, left=0, fraction=0, invoked=False):
+    painter.save()
+    # A near-black edge, then the raised frame; the artwork butts straight onto it.
+    painter.fillRect(slot, SLOT_EDGE)
+    painter.fillRect(QRectF(slot.left(), slot.bottom() - EDGE, slot.width(), EDGE),
+                     SLOT_EDGE_BOTTOM)
+    draw_bevel(painter, slot.adjusted(EDGE, EDGE, -EDGE, -EDGE), BEVEL, BEVEL_EDGES)
+    rect = slot.adjusted(FRAME, FRAME, -FRAME, -FRAME)
     painter.drawPixmap(rect, icon, QRectF(icon.rect()))
     if left > 0:
         # A clipped circular sector covers the remaining portion of the square.
@@ -94,16 +127,13 @@ def draw_spell(painter, slot, icon, left=0, fraction=0, invoked=False, frame=4):
         number = number_image(str(math.ceil(left)))
         painter.drawImage(rect.center() - QPointF(number.width() / 2,
                                                   number.height() / 2), number)
-    painter.setPen(QPen(QColor(0, 0, 0, 125), 2))
-    painter.setBrush(Qt.NoBrush)
-    painter.drawRect(rect.adjusted(1, 1, -1, -1))
-
     if invoked:
-        # Soft outer glow and a crisp green rim, confined to the existing slot.
-        painter.setPen(QPen(QColor(111, 205, 93, 65), 6))
-        painter.drawRect(slot.adjusted(3, 3, -3, -3))
-        painter.setPen(QPen(QColor(137, 221, 108, 245), 2))
-        painter.drawRect(slot.adjusted(2, 2, -2, -2))
+        # Soft outer glow, then a crisp green rim replacing the slot's black edge.
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(111, 205, 93, 65), 2 * EDGE))
+        painter.drawRect(slot.adjusted(EDGE, EDGE, -EDGE, -EDGE))
+        painter.setPen(QPen(QColor(137, 221, 108, 245), EDGE))
+        painter.drawRect(slot.adjusted(EDGE / 2, EDGE / 2, -EDGE / 2, -EDGE / 2))
     painter.restore()
 
 
@@ -159,7 +189,7 @@ class Overlay(LogicalWindow):
         painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         draw_panel(painter, self.design_rect)
         for spell, rect in self.spell_rects.items():
-            draw_spell(painter, rect, self.icons[spell], *self.state.get(spell, (0, 0, False)), frame=FRAME)
+            draw_spell(painter, rect, self.icons[spell], *self.state.get(spell, (0, 0, False)))
 
 
 def start(get_state):
