@@ -104,7 +104,7 @@ def overlay_state():
     with state_lock:
         now = time.monotonic()
         result = {}
-        for spell in INVOKE_RECIPES:
+        for spell in invoker_overlay.LAYOUT:
             left = max(0.0, ready_at.get(spell, 0) - now)
             total = cooldown_totals.get(spell, left)
             result[spell] = (left, min(1.0, left / total) if total > 0 else 0,

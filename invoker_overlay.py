@@ -18,8 +18,9 @@ PANEL_TOP = QColor(30, 36, 39, 155)
 PANEL_BOTTOM = QColor(17, 22, 25, 185)
 COOLDOWN_TINT = QColor(0, 0, 0, 185)
 
+# Autokey trigger keys in panel order; invoke has none, and sits bottom-left.
 # [q][w][e][r][o][p]
-#       [d][f][4][5]
+# [-]   [d][f][4][5]
 LAYOUT = {
     "invoker_ice_wall":        (0, 0),
     "invoker_sun_strike":      (1, 0),
@@ -31,6 +32,7 @@ LAYOUT = {
     "invoker_tornado":         (5, 0),
     "invoker_emp":             (4, 1),
     "invoker_ghost_walk":      (5, 1),
+    "invoker_invoke":          (0, 1),
 }
 
 
