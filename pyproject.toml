@@ -6,6 +6,7 @@ dependencies = [
     "fastapi",
     "keyboard",
     "pynput",
+    "pyside6>=6.11.2",
     "uvicorn[standard]",
 ]
 
