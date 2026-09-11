@@ -174,7 +174,7 @@ def worker():
 
 if __name__ == "__main__":
     for trigger_key in AUTOKEY:
-        keyboard.hook_key(trigger_key, on_trigger, suppress=True)
+        keyboard.hook_key(keyboard.key_to_scan_codes(trigger_key)[0], on_trigger, suppress=True)
     threading.Thread(target=worker, daemon=True).start()
 
     # Qt stays on the main thread so can toggle the overlay at any time.

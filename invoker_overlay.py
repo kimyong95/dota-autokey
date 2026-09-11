@@ -1,4 +1,4 @@
-"""Invoker panel layout, painting, refresh, and Ctrl+= visibility toggle."""
+"""Invoker panel layout, painting, refresh, and Home visibility toggle."""
 import math
 import signal
 from functools import lru_cache
@@ -13,32 +13,34 @@ from PySide6.QtWidgets import QApplication
 from window_utils import LogicalWindow
 
 ASSETS = Path(__file__).parent / "assets"
-# 4K design units; the bottom edge touches the left quick-buy panel.
-PANEL_WIDTH, QUICK_BUY_TOP = 582, 208
-# The frame is a black EDGE around a raised BEVEL; the slot stays 84 units wide,
-# so widening it from 4 to 6 takes those units off the artwork instead.
-SIZE, PAD, EDGE, BEVEL = 72, 8, 3, 3
+# 4K design units, measured off Dota's own HUD so the six columns sit squarely
+# over the six ability slots and the panel reads as the HUD bar carried upwards.
+SIZE, PAD, EDGE, BEVEL = 92, 8, 4, 4
 FRAME = EDGE + BEVEL
-PANEL_TOP = QColor(30, 36, 39, 155)
-PANEL_BOTTOM = QColor(17, 22, 25, 185)
+SLOT = SIZE + 2 * FRAME
+COLUMNS, ROWS = 6, 2
+PANEL_WIDTH = COLUMNS * SLOT + (COLUMNS + 1) * PAD
+PANEL_HEIGHT = ROWS * SLOT + (ROWS + 1) * PAD
+HUD_BAR_TOP, ABILITY_ROW_SHIFT = 290, 45   # bar lip above HUD bottom; row centre left of screen centre
+LIP, LIP_FADE = 2, 6
+PANEL_TOP = QColor(68, 77, 86, 232)
+PANEL_BOTTOM = QColor(62, 71, 80, 232)
+PANEL_LIP = QColor(96, 101, 111, 232)
+PANEL_SIDE = QColor(24, 29, 34, 150)
 COOLDOWN_TINT = QColor(0, 0, 0, 185)
-# Sampled off a 4K Dota ability slot: a near-black edge around a raised frame that
-# runs bright silver on top, mid grey down the left, darker right, darkest bottom.
 SLOT_EDGE = QColor(23, 27, 30, 240)
 SLOT_EDGE_BOTTOM = QColor(15, 18, 20, 240)
-# Outer and inner colour of each edge, clockwise from the top.
-BEVEL_EDGES = ((QColor(138, 146, 153), QColor(107, 116, 124)),
+BEVEL_EDGES = ((QColor(138, 146, 153), QColor(107, 116, 124)),    # clockwise from the top
                (QColor(43, 51, 59), QColor(58, 66, 74)),
                (QColor(35, 42, 49), QColor(35, 42, 49)),
                (QColor(85, 94, 102), QColor(70, 79, 87)))
-# Cooldown numbers are rasterised by Pillow; tune the shadow with these four.
-NUMBER_BOX = (88, 64)       # design units, both even so the centred blit stays crisp
+NUMBER_BOX = (112, 82)
 NUMBER_FILL = (242, 242, 237, 255)
 SHADOW_FILL, SHADOW_SPREAD, SHADOW_BLUR, SHADOW_OFFSET = (0, 0, 0, 235), 2, 2, (0, 0)
 FONT_FILE = ASSETS / "radiance-regular.otf"
-NUMBER_FONT = ImageFont.truetype(str(FONT_FILE) if FONT_FILE.exists() else "arialbd.ttf", 38)
+NUMBER_FONT = ImageFont.truetype(str(FONT_FILE) if FONT_FILE.exists() else "arialbd.ttf", 48)
 
-# Autokey trigger keys in panel order; invoke has none, and sits bottom-left.
+# Autokey trigger keys in panel order:
 # [q][w][e][r][o][p]
 # [-]   [d][f][4][5]
 LAYOUT = {
@@ -58,7 +60,6 @@ LAYOUT = {
 
 @lru_cache(maxsize=64)
 def number_image(text):
-    """Rasterise one cooldown number, centred in NUMBER_BOX over a soft shadow."""
     center = (NUMBER_BOX[0] / 2, NUMBER_BOX[1] / 2)
     image = Image.new("RGBA", NUMBER_BOX)
     ImageDraw.Draw(image).text((center[0] + SHADOW_OFFSET[0], center[1] + SHADOW_OFFSET[1]),
@@ -70,29 +71,27 @@ def number_image(text):
 
 
 def draw_panel(painter, rect):
-    panel = QLinearGradient(0, rect.top(), 0, rect.bottom())
-    panel.setColorAt(0, PANEL_TOP)
-    panel.setColorAt(1, PANEL_BOTTOM)
-    painter.fillRect(rect, panel)
-    # Native HUD panels have a faint top lip, not a bright enclosing outline.
-    painter.fillRect(QRectF(rect.left(), rect.top(), rect.width(), 2), QColor(137, 148, 151, 65))
-    painter.fillRect(QRectF(rect.left(), rect.bottom() - 2, rect.width(), 2),
-                     QColor(0, 0, 0, 110))
+    body = QLinearGradient(0, rect.top(), 0, rect.bottom())
+    body.setColorAt(0, PANEL_TOP)
+    body.setColorAt(1, PANEL_BOTTOM)
+    painter.fillRect(rect, body)
+    lip = QLinearGradient(0, rect.top(), 0, rect.top() + LIP_FADE)
+    lip.setColorAt(0, PANEL_LIP)
+    lip.setColorAt(LIP / LIP_FADE, PANEL_LIP)
+    lip.setColorAt(1, QColor(PANEL_LIP.red(), PANEL_LIP.green(), PANEL_LIP.blue(), 0))
+    painter.fillRect(QRectF(rect.left(), rect.top(), rect.width(), LIP_FADE), lip)
+    for x in (rect.left(), rect.right() - LIP):
+        painter.fillRect(QRectF(x, rect.top(), LIP, rect.height()), PANEL_SIDE)
 
 
 def draw_bevel(painter, outer, width, colours):
-    """Fill the ring inside `outer` with one shaded edge per side, mitred at the corners.
-
-    Mitres are drawn unantialiased: the diagonals abut exactly, and a feathered join
-    would leave a hairline of panel showing through where two edges meet.
-    """
     inner = outer.adjusted(width, width, -width, -width)
     edges = ((outer.topLeft(), outer.topRight(), inner.topRight(), inner.topLeft()),
              (outer.topRight(), outer.bottomRight(), inner.bottomRight(), inner.topRight()),
              (outer.bottomRight(), outer.bottomLeft(), inner.bottomLeft(), inner.bottomRight()),
              (outer.bottomLeft(), outer.topLeft(), inner.topLeft(), inner.bottomLeft()))
     painter.save()
-    painter.setRenderHint(QPainter.Antialiasing, False)
+    painter.setRenderHint(QPainter.Antialiasing, False)   # feathered mitres leak the panel through
     painter.setPen(Qt.NoPen)
     for points, (outer_colour, inner_colour) in zip(edges, colours):
         shade = QLinearGradient((points[0] + points[1]) / 2, (points[2] + points[3]) / 2)
@@ -105,7 +104,6 @@ def draw_bevel(painter, outer, width, colours):
 
 def draw_spell(painter, slot, icon, left=0, fraction=0, invoked=False):
     painter.save()
-    # A near-black edge, then the raised frame; the artwork butts straight onto it.
     painter.fillRect(slot, SLOT_EDGE)
     painter.fillRect(QRectF(slot.left(), slot.bottom() - EDGE, slot.width(), EDGE),
                      SLOT_EDGE_BOTTOM)
@@ -113,7 +111,6 @@ def draw_spell(painter, slot, icon, left=0, fraction=0, invoked=False):
     rect = slot.adjusted(FRAME, FRAME, -FRAME, -FRAME)
     painter.drawPixmap(rect, icon, QRectF(icon.rect()))
     if left > 0:
-        # A clipped circular sector covers the remaining portion of the square.
         painter.fillRect(rect, QColor(0, 0, 0, 45))
         radius = math.hypot(rect.width(), rect.height()) / 2
         circle = QRectF(rect.center().x() - radius, rect.center().y() - radius,
@@ -128,7 +125,6 @@ def draw_spell(painter, slot, icon, left=0, fraction=0, invoked=False):
         painter.drawImage(rect.center() - QPointF(number.width() / 2,
                                                   number.height() / 2), number)
     if invoked:
-        # Soft outer glow, then a crisp green rim replacing the slot's black edge.
         painter.setBrush(Qt.NoBrush)
         painter.setPen(QPen(QColor(111, 205, 93, 65), 2 * EDGE))
         painter.drawRect(slot.adjusted(EDGE, EDGE, -EDGE, -EDGE))
@@ -141,27 +137,24 @@ class Overlay(LogicalWindow):
     toggle_requested = Signal()
 
     def __init__(self, get_state):
-        slot = SIZE + 2 * FRAME
-        step = slot + PAD
-        margin = (PANEL_WIDTH - (6 * step - PAD)) / 2
-        super().__init__(QRectF(0, 0, PANEL_WIDTH, 2 * step - PAD + 2 * margin))
+        step = SLOT + PAD
+        super().__init__(QRectF(0, 0, PANEL_WIDTH, PANEL_HEIGHT))
         self.get_state = get_state
         self.state = {}
         self.spell_rects = {
-            spell: QRectF(margin + col * step, margin + row * step, slot, slot)
+            spell: QRectF(PAD + col * step, PAD + row * step, SLOT, SLOT)
             for spell, (col, row) in LAYOUT.items()
         }
         self.prepare_assets()
         self.icons = {spell: QPixmap(str(ASSETS / f"{spell}.png")) for spell in LAYOUT}
         self.toggle_requested.connect(self.toggle, Qt.QueuedConnection)
-        self.follow_bottom(QUICK_BUY_TOP)
+        self.follow_hud(HUD_BAR_TOP - LIP, ABILITY_ROW_SHIFT)
         timer = QTimer(self)
         timer.timeout.connect(self.refresh)
         timer.start(50)
         self.refresh()
 
     def prepare_assets(self):
-        """Download missing spell icons before loading their pixmaps."""
         ASSETS.mkdir(parents=True, exist_ok=True)
         for spell in LAYOUT:
             target = ASSETS / f"{spell}.png"
@@ -172,15 +165,15 @@ class Overlay(LogicalWindow):
 
     @Slot()
     def toggle(self):
-        self.setVisible(not self.isVisible())
-        if self.isVisible():
+        if not self.isVisible():
             self.align_to_display(force=True)
+        self.setVisible(not self.isVisible())
 
     def refresh(self):
         self.set_state(self.get_state())
 
     def set_state(self, state):
-        """Accept {spell: (seconds_remaining, cooldown_fraction, invoked)}."""
+        """state: {spell: (seconds_remaining, cooldown_fraction, invoked)}"""
         self.state = state
         self.update()
 
@@ -193,12 +186,13 @@ class Overlay(LogicalWindow):
 
 
 def start(get_state):
-    """Blocks in the Qt event loop. Must be called on the main thread."""
-    signal.signal(signal.SIGINT, signal.SIG_DFL)    # Qt's event loop swallows SIGINT otherwise
+    """Blocks in the Qt event loop; must run on the main thread."""
     qt = QApplication([])
     qt.setQuitOnLastWindowClosed(False)
     overlay = Overlay(get_state)
-    hotkey = keyboard.add_hotkey("ctrl+=", overlay.toggle_requested.emit, suppress=True, trigger_on_release=True)
+    signal.signal(signal.SIGINT, lambda *_: qt.quit())
+
+    hotkey = keyboard.add_hotkey("home", overlay.toggle_requested.emit, suppress=True, trigger_on_release=True)
     try:
         qt.exec()
     finally:
