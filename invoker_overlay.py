@@ -1,10 +1,11 @@
-"""Invoker panel layout, painting, refresh, and Home visibility toggle."""
+"""Invoker panel layout, painting, refresh, and hold-alt visibility."""
 import math
 import signal
 from functools import lru_cache
 from pathlib import Path
 import httpx
 import keyboard
+from keyboard import KEY_DOWN
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (QColor, QImage, QLinearGradient, QPainter, QPen,
@@ -21,8 +22,11 @@ SLOT = SIZE + 2 * FRAME
 COLUMNS, ROWS = 6, 2
 PANEL_WIDTH = COLUMNS * SLOT + (COLUMNS + 1) * PAD
 PANEL_HEIGHT = ROWS * SLOT + (ROWS + 1) * PAD
-HUD_BAR_TOP, ABILITY_ROW_SHIFT = 290, 45   # bar lip above HUD bottom; row centre left of screen centre
+HUD_BAR_TOP, ABILITY_ROW_SHIFT = 526, 45   # bar lip above HUD bottom; row centre left of screen centre
 LIP, LIP_FADE = 2, 6
+OVERLAY_OPACITY = 1.0
+DIVIDER_AFTER_COLUMN, DIVIDER_WIDTH, DIVIDER_INSET = 4, 2, PAD   # splits the panel into two groups
+DIVIDER = QColor(255, 255, 255)
 PANEL_TOP = QColor(68, 77, 86, 232)
 PANEL_BOTTOM = QColor(62, 71, 80, 232)
 PANEL_LIP = QColor(96, 101, 111, 232)
@@ -54,7 +58,6 @@ LAYOUT = {
     "invoker_tornado":         (5, 0),
     "invoker_emp":             (4, 1),
     "invoker_ghost_walk":      (5, 1),
-    "invoker_invoke":          (0, 1),
 }
 
 
@@ -82,6 +85,10 @@ def draw_panel(painter, rect):
     painter.fillRect(QRectF(rect.left(), rect.top(), rect.width(), LIP_FADE), lip)
     for x in (rect.left(), rect.right() - LIP):
         painter.fillRect(QRectF(x, rect.top(), LIP, rect.height()), PANEL_SIDE)
+    # centred in the gap after DIVIDER_AFTER_COLUMN
+    x = rect.left() + DIVIDER_AFTER_COLUMN * (SLOT + PAD) + (PAD - DIVIDER_WIDTH) / 2
+    painter.fillRect(QRectF(x, rect.top() + DIVIDER_INSET, DIVIDER_WIDTH,
+                            rect.height() - 2 * DIVIDER_INSET), DIVIDER)
 
 
 def draw_bevel(painter, outer, width, colours):
@@ -134,11 +141,12 @@ def draw_spell(painter, slot, icon, left=0, fraction=0, invoked=False):
 
 
 class Overlay(LogicalWindow):
-    toggle_requested = Signal()
+    show_requested = Signal(bool)
 
     def __init__(self, get_state):
         step = SLOT + PAD
         super().__init__(QRectF(0, 0, PANEL_WIDTH, PANEL_HEIGHT))
+        self.setWindowOpacity(OVERLAY_OPACITY)
         self.get_state = get_state
         self.state = {}
         self.spell_rects = {
@@ -147,7 +155,7 @@ class Overlay(LogicalWindow):
         }
         self.prepare_assets()
         self.icons = {spell: QPixmap(str(ASSETS / f"{spell}.png")) for spell in LAYOUT}
-        self.toggle_requested.connect(self.toggle, Qt.QueuedConnection)
+        self.show_requested.connect(self.set_shown, Qt.QueuedConnection)
         self.follow_hud(HUD_BAR_TOP - LIP, ABILITY_ROW_SHIFT)
         timer = QTimer(self)
         timer.timeout.connect(self.refresh)
@@ -163,11 +171,11 @@ class Overlay(LogicalWindow):
             url = f"https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/abilities/{spell}.png"
             target.write_bytes(httpx.get(url, timeout=15).raise_for_status().content)
 
-    @Slot()
-    def toggle(self):
-        if not self.isVisible():
+    @Slot(bool)
+    def set_shown(self, shown):
+        if shown and not self.isVisible():
             self.align_to_display(force=True)
-        self.setVisible(not self.isVisible())
+        self.setVisible(shown)
 
     def refresh(self):
         self.set_state(self.get_state())
@@ -192,8 +200,10 @@ def start(get_state):
     overlay = Overlay(get_state)
     signal.signal(signal.SIGINT, lambda *_: qt.quit())
 
-    hotkey = keyboard.add_hotkey("home", overlay.toggle_requested.emit, suppress=True, trigger_on_release=True)
+    # panel is shown only while alt is held; the hook must not block, so hand
+    # off to the Qt thread through the queued signal
+    hook = keyboard.hook_key("alt", lambda event: overlay.show_requested.emit(event.event_type == KEY_DOWN))
     try:
         qt.exec()
     finally:
-        keyboard.remove_hotkey(hotkey)
+        keyboard.unhook(hook)
