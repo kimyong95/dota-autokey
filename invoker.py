@@ -162,19 +162,18 @@ def run(key, event_type):
     cast_spell(spell, event_type)
 
 
-def on_trigger(event):
-    # hand off immediately; the hook must not block
-    event_queue.put((event.name, event.event_type))
-
-
 def worker():
     while True:
         run(*event_queue.get())
 
 
 if __name__ == "__main__":
-    for trigger_key in AUTOKEY:
-        keyboard.hook_key(keyboard.key_to_scan_codes(trigger_key)[0], on_trigger, suppress=True)
+    for key in AUTOKEY:
+        keyboard.hook_key(
+            keyboard.key_to_scan_codes(key)[0],
+            lambda event, key=key: event_queue.put((key, event.event_type)),
+            suppress=True,
+        )
     threading.Thread(target=worker, daemon=True).start()
 
     # Qt stays on the main thread so can toggle the overlay at any time.
