@@ -1,9 +1,8 @@
-"""Find Dota 2's Game State Integration folder and copy the autokey config there.
+"""Copy the contents of dota_configs/ into Dota 2's config directory.
 
 Usage:
-    python installer.py
-    python installer.py --dry-run
-    python installer.py --cfg-file other.cfg
+    python install_configs.py
+    python install_configs.py --dry-run
 """
 
 import argparse
@@ -12,10 +11,13 @@ import string
 import sys
 from pathlib import Path
 
+CONFIG_SRC_DIR = Path(__file__).resolve().parent / "dota_configs"
+CONFIG_DST_DIR = Path("game") / "dota" / "cfg"
+LAUNCH_OPTIONS = "-gamestateintegration -condebug"
+
 MAX_DEPTH = 5
 # "steamapps/common/dota 2 beta" is 3 levels, so it can sit under 0..2 wildcard levels.
 PATTERNS = ["*/" * d + "steamapps/common/dota 2 beta" for d in range(MAX_DEPTH)]
-GSI_SUBPATH = Path("game") / "dota" / "cfg" / "gamestate_integration"
 
 
 def drives() -> list[Path]:
@@ -30,17 +32,12 @@ def find_dota() -> Path | None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument(
-        "--cfg-file",
-        type=Path,
-        default=Path(__file__).resolve().parent / "gamestate_integration_autokey.cfg",
-        help="config file to install (default: the one next to this script)",
-    )
     parser.add_argument("--dry-run", action="store_true", help="report without copying")
     args = parser.parse_args()
 
-    if not args.cfg_file.is_file():
-        print(f"Error: config file not found: {args.cfg_file}", file=sys.stderr)
+    config_src_files = sorted(path for path in CONFIG_SRC_DIR.rglob("*") if path.is_file())
+    if not config_src_files:
+        print(f"Error: no files in {CONFIG_SRC_DIR}", file=sys.stderr)
         return 1
 
     print("Searching for Dota 2...")
@@ -50,15 +47,16 @@ def main() -> int:
         return 1
     print(f"Found Dota 2: {dota}")
 
-    target = dota / GSI_SUBPATH / args.cfg_file.name
-    if args.dry_run:
-        print(f"[dry-run] would copy {args.cfg_file} -> {target}")
-        return 0
+    for config_src in config_src_files:
+        config_dst = dota / CONFIG_DST_DIR / config_src.relative_to(CONFIG_SRC_DIR)
+        if args.dry_run:
+            print(f"[dry-run] would copy {config_src} -> {config_dst}")
+            continue
+        config_dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(config_src, config_dst)
+        print(f"Installed: {config_dst}")
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(args.cfg_file, target)
-    print(f"Installed: {target}")
-    print(f"Remember to add -gamestateintegration to Dota 2 launch option.")
+    print(f"Remember to add {LAUNCH_OPTIONS} to Dota 2's launch options and restart Dota.")
     return 0
 
 
