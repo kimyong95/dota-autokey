@@ -3,7 +3,7 @@
 The wall is the line WALL_DISTANCE in front of Invoker and perpendicular to his facing, sampled
 every SAMPLE_STEP world units; each sample is projected with utils.CameraScreenProjection, which puts
 it on the measured terrain, so the drawn polyline follows slopes and cliffs. The camera position comes
-from utils.Camera (F10 -> console.log, needs -condebug).
+from the utils.Camera passed in (F10 -> console.log, needs -condebug).
 """
 import math
 from PySide6.QtCore import QPointF, Qt, QTimer, Signal, Slot
@@ -29,17 +29,18 @@ class InvokerIcewallOverlay(QWidget):
     """Ice Wall line on the ground, shown on request. Create on the Qt thread.
 
     get_state() -> the hero's (x, y, yaw) with yaw in degrees (0 = +x, 90 = +y), or None
+    camera: utils.Camera
     """
     show_requested = Signal(bool)
 
-    def __init__(self, get_state):
+    def __init__(self, get_state, camera):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
                             | Qt.Tool | Qt.WindowTransparentForInput)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.get_state = get_state
-        self.camera = utils.Camera()
+        self.camera = camera
         self.projection = None  # set while shown, for the viewport at that time
         self.origin = QPointF()
         self.points = []

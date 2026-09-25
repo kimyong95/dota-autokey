@@ -9,6 +9,8 @@ from PySide6.QtWidgets import QApplication
 
 import invoker_hub_overlay
 import invoker_icewall_overlay
+import invoker_tornado_overlay
+import utils
 from utils import updated_abilities
 
 WAIT_INVOKE_TIMEOUT = 0.2
@@ -19,13 +21,13 @@ KEY_BINDING = {
 }
 
 AUTOKEY = {
-    "4": "invoker_ice_wall",
+    "q": "invoker_ice_wall",
     "w": "invoker_sun_strike",
     "e": "invoker_chaos_meteor",
     "r": "invoker_deafening_blast",
     "d": "invoker_forge_spirit", "f": "invoker_alacrity",
     "o": "invoker_cold_snap", "p": "invoker_tornado",
-    "q": "invoker_emp", "5": "invoker_ghost_walk",
+    "4": "invoker_emp", "5": "invoker_ghost_walk",
 }
 
 INVOKE_RECIPES = {
@@ -64,13 +66,16 @@ class DedupeQueue:
 
 
 invoked = {}                       # spell -> cast key, updated by GSI
+ability_levels = {}                # ability name -> level, updated by GSI
 hero_minimap_state = None          # (x, y, yaw) from GSI's minimap block; yaw 0 = +x, 90 = +y
+tornado_cast_state = None          # (release time, hero x, hero y) of the last Tornado cast
 ready_at = {}                      # spell -> monotonic time it comes off cooldown
 cooldown_totals = {}               # duration observed at the start of each cooldown
 state_lock = threading.Lock()
 event_queue = DedupeQueue()        # trigger events awaiting the worker
 hub_overlay = None                 # created on the Qt (main) thread
 icewall_overlay = None
+tornado_overlay = None
 
 app = FastAPI()
 
@@ -119,14 +124,27 @@ def icewall_overlay_state():
     return hero_minimap_state
 
 
+def tornado_overlay_state():
+    """The last Tornado cast, the orb levels that time it, and which follow-ups are off cooldown."""
+    with state_lock:
+        now = time.monotonic()
+        return {
+            "cast": tornado_cast_state,
+            "quas_level": ability_levels.get("invoker_quas", 0),
+            "wex_level": ability_levels.get("invoker_wex", 0),
+            "ready": {spell: now >= ready_at.get(spell, 0) for spell in invoker_tornado_overlay.FOLLOW_UPS},
+        }
+
+
 @app.post("/")
 async def gsi(request: Request):
-    global invoked, hero_minimap_state
+    global invoked, ability_levels, hero_minimap_state
     payload = await request.json()
     abilities = payload.get("abilities", {})
     prev_abilities = payload.get("previously", {}).get("abilities", {})
     with state_lock:
         invoked = {abilities[slot]["name"]: cast_key for slot, cast_key in SLOT_KEYS.items() if slot in abilities}
+        ability_levels = {ability["name"]: ability["level"] for ability in abilities.values() if "name" in ability}
         track_cooldown(abilities, prev_abilities)
     for unit in (payload.get("minimap") or {}).values():
         if isinstance(unit, dict) and unit.get("image") == "minimap_herocircle_self":
@@ -148,6 +166,7 @@ def cast_spell(spell, event_type):
 
 
 def run(spell, event_type):
+    global tornado_cast_state
     # Ice Wall is aimed while its key is held and cast on release: preview it meanwhile
     if spell == "invoker_ice_wall":
         icewall_overlay.show_requested.emit(event_type == KEY_DOWN)
@@ -165,6 +184,15 @@ def run(spell, event_type):
     if keyboard.is_pressed("alt"):
         return
 
+    # during a Tornado combo, a follow-up pressed before its arc lights up is not cast
+    if event_type == KEY_DOWN and not tornado_overlay.is_lit(spell):
+        return
+
+    # Tornado is cast on release; remember when and from where for the combo ring
+    if (spell == "invoker_tornado" and event_type == KEY_UP and spell in invoked
+            and time.monotonic() >= ready_at.get(spell, 0) and hero_minimap_state):
+        tornado_cast_state = (time.monotonic(), *hero_minimap_state[:2])
+
     cast_spell(spell, event_type)
 
 
@@ -178,8 +206,10 @@ if __name__ == "__main__":
     # they exist before any key hook or GSI post can reach them.
     qt = QApplication([])
     qt.setQuitOnLastWindowClosed(False)
+    camera = utils.Camera()        # one F10 poller, shared by the overlays that need the camera
     hub_overlay = invoker_hub_overlay.InvokerHubOverlay(hub_overlay_state)
-    icewall_overlay = invoker_icewall_overlay.InvokerIcewallOverlay(icewall_overlay_state)
+    icewall_overlay = invoker_icewall_overlay.InvokerIcewallOverlay(icewall_overlay_state, camera)
+    tornado_overlay = invoker_tornado_overlay.InvokerTornadoOverlay(tornado_overlay_state, camera)
 
     for key, spell in AUTOKEY.items():
         keyboard.hook_key(

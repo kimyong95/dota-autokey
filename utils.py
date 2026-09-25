@@ -71,7 +71,7 @@ class Camera:
     """The camera eye position, kept fresh by a background thread.
 
         camera = utils.Camera()
-        camera.position          # (x, y, z), or None until Dota first answers
+        camera.position          # (x, y, z), or None until a camera line is found
 
     Every `interval` seconds: presses `key` if Dota is the foreground window (autoexec.cfg binds
     it to `dota_camera_get_pos`, which -condebug logs to console.log), then reads the last
@@ -90,14 +90,12 @@ class Camera:
 
     def _run(self, interval, key):
         with self.log.open("rb") as f:
-            start = f.seek(0, 2)                        # ignore camera lines from before we started
             while True:
                 if dota_is_foreground():
                     keyboard.press_and_release(key)
                 time.sleep(interval)
-                end = f.seek(0, 2)
-                f.seek(max(start, end - self.TAIL_BYTES))
-                tail = f.read(end - f.tell())
+                f.seek(max(0, f.seek(0, 2) - self.TAIL_BYTES))     # Dota empties the log at each launch
+                tail = f.read()
                 tail = tail[:tail.rfind(b"\n") + 1]     # drop a line Dota is still writing
                 if matches := self.LINE_RE.findall(tail):
                     self.position = tuple(map(float, matches[-1]))    # the latest one written

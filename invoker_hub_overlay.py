@@ -46,7 +46,7 @@ NUMBER_FONT = ImageFont.truetype(str(FONT_FILE) if FONT_FILE.exists() else "aria
 # [q][w][e][r][o][p]
 # [-]   [d][f][4][5]
 LAYOUT = {
-    "invoker_emp":        (0, 0),
+    "invoker_ice_wall":        (0, 0),
     "invoker_sun_strike":      (1, 0),
     "invoker_chaos_meteor":    (2, 0),
     "invoker_deafening_blast": (3, 0),
@@ -54,7 +54,7 @@ LAYOUT = {
     "invoker_alacrity":        (3, 1),
     "invoker_cold_snap":       (4, 0),
     "invoker_tornado":         (5, 0),
-    "invoker_ice_wall":             (4, 1),
+    "invoker_emp":             (4, 1),
     "invoker_ghost_walk":      (5, 1),
 }
 
