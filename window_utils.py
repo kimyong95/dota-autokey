@@ -25,6 +25,10 @@ def hud_surface():
     return (0, 0, *size), size
 
 
+def dota_is_foreground():
+    return win32gui.GetWindowText(win32gui.GetForegroundWindow()) == "Dota 2"
+
+
 def place_overlay(window, bounds):
     win32gui.SetWindowPos(window, win32con.HWND_TOPMOST, *bounds, win32con.SWP_NOACTIVATE)
 

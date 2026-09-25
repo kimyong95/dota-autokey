@@ -68,45 +68,39 @@ class CameraScreenProjection:
 
 
 class Camera:
-    """The camera eye position, kept fresh by background threads.
+    """The camera eye position, kept fresh by a background thread.
 
         camera = utils.Camera()
         camera.position          # (x, y, z), or None until Dota first answers
 
-    Presses `key` every `interval` seconds while Dota is the foreground window; autoexec.cfg
-    binds it to `dota_camera_get_pos`, whose answer is read back from console.log (needs
-    -condebug in Dota's launch options).
+    Every `interval` seconds: presses `key` if Dota is the foreground window (autoexec.cfg binds
+    it to `dota_camera_get_pos`, which -condebug logs to console.log), then reads the last
+    TAIL_BYTES of console.log and takes the latest complete camera line written there.
     """
 
-    LINE_RE = re.compile(r"Camera position:\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)")
+    LINE_RE = re.compile(rb"Camera position:\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)")
+    TAIL_BYTES = 2048       # one F10 round logs ~150 bytes; 99 % of gaps between camera lines < 900
 
     def __init__(self, interval=0.05, key="f10"):
         self.position = None
         self.log = find_dota() / "game" / "dota" / "console.log"
         if not self.log.exists():
             raise FileNotFoundError(f"{self.log} does not exist: is -condebug in Dota's launch options?")
-        threading.Thread(target=self._query, args=(interval, key), daemon=True).start()
-        threading.Thread(target=self._read, daemon=True).start()
+        threading.Thread(target=self._run, args=(interval, key), daemon=True).start()
 
-    def _query(self, interval, key):
-        while True:
-            if dota_is_foreground():
-                keyboard.press_and_release(key)
-            time.sleep(interval)
-
-    def _read(self):
+    def _run(self, interval, key):
         with self.log.open("rb") as f:
-            f.seek(0, 2)
-            pending = b""
+            start = f.seek(0, 2)                        # ignore camera lines from before we started
             while True:
-                chunk = f.read()
-                if not chunk:
-                    time.sleep(0.005)
-                    continue
-                *lines, pending = (pending + chunk).split(b"\n")
-                for line in lines:
-                    if m := self.LINE_RE.search(line.decode(errors="replace")):
-                        self.position = tuple(map(float, m.groups()))
+                if dota_is_foreground():
+                    keyboard.press_and_release(key)
+                time.sleep(interval)
+                end = f.seek(0, 2)
+                f.seek(max(start, end - self.TAIL_BYTES))
+                tail = f.read(end - f.tell())
+                tail = tail[:tail.rfind(b"\n") + 1]     # drop a line Dota is still writing
+                if matches := self.LINE_RE.findall(tail):
+                    self.position = tuple(map(float, matches[-1]))    # the latest one written
 
 
 def updated_abilities(curr_abilities, prev_abilities, filter_info):
