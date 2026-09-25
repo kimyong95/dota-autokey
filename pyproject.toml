@@ -13,6 +13,7 @@ dependencies = [
     "uvicorn[standard]",
     "bpy>=5.2",
     "numpy",
+    "tqdm>=4.70.1",
 ]
 
 [tool.uv]

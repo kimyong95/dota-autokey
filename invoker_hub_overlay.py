@@ -1,6 +1,5 @@
-"""Invoker panel layout, painting, refresh, and hold-alt visibility."""
+"""Invoker hub: spell panel layout, painting, refresh, and hold-alt visibility."""
 import math
-import signal
 from functools import lru_cache
 from pathlib import Path
 import httpx
@@ -10,7 +9,6 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (QColor, QImage, QLinearGradient, QPainter, QPen,
                            QPixmap, QPolygonF)
-from PySide6.QtWidgets import QApplication
 from window_utils import LogicalWindow
 
 ASSETS = Path(__file__).parent / "assets"
@@ -48,7 +46,7 @@ NUMBER_FONT = ImageFont.truetype(str(FONT_FILE) if FONT_FILE.exists() else "aria
 # [q][w][e][r][o][p]
 # [-]   [d][f][4][5]
 LAYOUT = {
-    "invoker_ice_wall":        (0, 0),
+    "invoker_emp":        (0, 0),
     "invoker_sun_strike":      (1, 0),
     "invoker_chaos_meteor":    (2, 0),
     "invoker_deafening_blast": (3, 0),
@@ -56,7 +54,7 @@ LAYOUT = {
     "invoker_alacrity":        (3, 1),
     "invoker_cold_snap":       (4, 0),
     "invoker_tornado":         (5, 0),
-    "invoker_emp":             (4, 1),
+    "invoker_ice_wall":             (4, 1),
     "invoker_ghost_walk":      (5, 1),
 }
 
@@ -140,7 +138,11 @@ def draw_spell(painter, slot, icon, left=0, fraction=0, invoked=False):
     painter.restore()
 
 
-class Overlay(LogicalWindow):
+class InvokerHubOverlay(LogicalWindow):
+    """Spell panel above the HUD, shown while alt is held. Create on the Qt thread.
+
+    get_state() -> {spell: (seconds_remaining, cooldown_fraction, invoked)}
+    """
     show_requested = Signal(bool)
 
     def __init__(self, get_state):
@@ -161,6 +163,9 @@ class Overlay(LogicalWindow):
         timer.timeout.connect(self.refresh)
         timer.start(50)
         self.refresh()
+        # shown only while alt is held; the hook must not block, so hand off to
+        # the Qt thread through the queued signal
+        keyboard.hook_key("alt", lambda event: self.show_requested.emit(event.event_type == KEY_DOWN))
 
     def prepare_assets(self):
         ASSETS.mkdir(parents=True, exist_ok=True)
@@ -191,19 +196,3 @@ class Overlay(LogicalWindow):
         draw_panel(painter, self.design_rect)
         for spell, rect in self.spell_rects.items():
             draw_spell(painter, rect, self.icons[spell], *self.state.get(spell, (0, 0, False)))
-
-
-def start(get_state):
-    """Blocks in the Qt event loop; must run on the main thread."""
-    qt = QApplication([])
-    qt.setQuitOnLastWindowClosed(False)
-    overlay = Overlay(get_state)
-    signal.signal(signal.SIGINT, lambda *_: qt.quit())
-
-    # panel is shown only while alt is held; the hook must not block, so hand
-    # off to the Qt thread through the queued signal
-    hook = keyboard.hook_key("alt", lambda event: overlay.show_requested.emit(event.event_type == KEY_DOWN))
-    try:
-        qt.exec()
-    finally:
-        keyboard.unhook(hook)
