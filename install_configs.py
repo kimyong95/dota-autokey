@@ -13,7 +13,7 @@ from pathlib import Path
 
 CONFIG_SRC_DIR = Path(__file__).resolve().parent / "dota_configs"
 CONFIG_DST_DIR = Path("game") / "dota" / "cfg"
-LAUNCH_OPTIONS = "-gamestateintegration -condebug"
+LAUNCH_OPTIONS = "-gamestateintegration -condebug -console"
 
 MAX_DEPTH = 5
 # "steamapps/common/dota 2 beta" is 3 levels, so it can sit under 0..2 wildcard levels.
