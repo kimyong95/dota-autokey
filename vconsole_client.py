@@ -1,25 +1,24 @@
 """
-Minimal Source 2 VConsole client (stdlib only).
+Minimal Source 2 VConsole client (stdlib only) that runs server Lua and reads its reply.
 Protocol credit: https://github.com/oxijoined/vconsole-python and Demon673/dota2-mcp.
 
 Dota 2 opens the remote console on TCP 127.0.0.1:29000 in -tools mode only.
 
     with VConsoleClient() as vc:
-        lines = vc.run("status")               # console output of exactly that command
-        lines = vc.run_script("check_ground")  # script_reload_code; raises on Lua errors
+        vc.run_lua("GetGroundHeight(Vector(0, 0, 0), nil)")  # "128"
+
+    python vconsole_client.py getpos                 # run one console command, print its output
 
 Wire format: 12-byte big-endian header (4s type, u16 version, u32 length incl. header,
 u16 handle) then body. We send CMND (body = command + NUL) and read PRNT (text is a
 NUL-terminated string at body offset 28); every other packet type is skipped.
 
-`run()` brackets the command between `echo VC_BEGIN_<id>` and `echo VC_END_<id>`.
-Dota executes console commands in order, so the lines between the markers are exactly
-the command's output; the console history Dota replays on connect never leaks in, and
-END is a positive "finished" signal. Only output printed synchronously by the command
-is captured ("Unknown command: ..." is printed a frame later and is missed).
+The console is a broadcast log stream, so the Lua prints `REQUEST=<uid> VALUE=<value>` and
+we wait for the line with our uid. Any failure (Lua error, lost connection) is just a timeout.
 """
 
 import queue
+import re
 import socket
 import struct
 import threading
@@ -28,21 +27,14 @@ import uuid
 
 HEADER = struct.Struct(">4sHIH")
 VERSION = 0xD4
-
-
-class VConsoleError(Exception):
-    pass
+MAX_COMMAND = 510  # longest console command Dota executes (measured); longer ones vanish
 
 
 class VConsoleClient:
-    def __init__(self, host: str = "127.0.0.1", port: int = 29000, timeout: float = 5.0) -> None:
-        try:
-            self._sock = socket.create_connection((host, port), timeout=timeout)
-        except OSError as e:
-            raise VConsoleError(f"connect to {host}:{port} failed: {e}") from e
+    def __init__(self, host: str = "127.0.0.1", port: int = 29000) -> None:
+        self._sock = socket.create_connection((host, port), timeout=5.0)
         self._sock.settimeout(None)
-        self._lines: queue.SimpleQueue[str | None] = queue.SimpleQueue()  # None = listener died
-        self._error: Exception | None = None
+        self._lines: queue.SimpleQueue[str] = queue.SimpleQueue()
         threading.Thread(target=self._listen, daemon=True).start()
 
     def __enter__(self) -> "VConsoleClient":
@@ -51,45 +43,54 @@ class VConsoleClient:
     def __exit__(self, *exc) -> None:
         self._sock.close()
 
-    def run(self, cmd: str, timeout: float = 5.0) -> list[str]:
-        tag = uuid.uuid4().hex
-        begin, end = f"VC_BEGIN_{tag}", f"VC_END_{tag}"
-        for c in (f"echo {begin}", cmd, f"echo {end}"):
-            self._send(c)
-        deadline = time.monotonic() + timeout
-        lines: list[str] = []
-        started = False
-        while True:
-            line = self._next(deadline, cmd)
-            if not started:
-                started = begin in line
-            elif end in line:
-                return lines
-            else:
-                lines.append(line)
+    def run_cmd(self, cmd: str, timeout: float = 2.0) -> str | None:
+        """Run a console command, e.g. "getpos", and return what it printed.
 
-    def run_script(self, name: str, timeout: float = 5.0) -> list[str]:
-        lines = self.run(f"script_reload_code {name}", timeout)
-        for line in lines:
-            if "Script Runtime Error" in line or "Script not found" in line:
-                raise VConsoleError(f"{name}: {line}")
-        return lines
+        Sent as one line, `echo REQUEST=<uid> BEGIN; <cmd>; echo REQUEST=<uid> END`. Dota runs
+        the `;`-separated commands in order, so the lines between the two echoes are exactly
+        its output (joined with newlines; "" if it printed nothing). Only output printed while
+        the command runs is captured. Returns None on timeout. Dota silently drops commands
+        over 510 chars (the echoes take 104 of them); longer ones raise ValueError.
+        """
+        uid = uuid.uuid4().hex
+        begin, end = f"REQUEST={uid} BEGIN", f"REQUEST={uid} END"
+        self._send(f"echo {begin}; {cmd}; echo {end}")
+        deadline = time.monotonic() + timeout
+        seen: list[str] = []
+        try:
+            while (line := self._lines.get(timeout=max(0.0, deadline - time.monotonic()))) != end:
+                seen.append(line)
+        except queue.Empty:
+            return None
+        return "\n".join(seen[seen.index(begin) + 1:])
+
+    def run_lua(self, expr: str, timeout: float = 2.0) -> str | None:
+        """Evaluate the Lua expression `expr` in the server VM and return it as a string.
+
+        Returns None on timeout (including Lua errors). `expr` must be a single line, with
+        single quotes only. Dota silently drops console commands over 510 chars, which leaves
+        365 for `expr`; longer ones raise ValueError. A console line is cut
+        at ~16383 chars, so a longer value comes back silently truncated.
+        """
+        uid = uuid.uuid4().hex
+        lua = f"local value = {expr} print(string.format('REQUEST={uid} VALUE=%s', tostring(value)))"
+        self._send(f'ent_fire dota_gamerules RunScriptCode "{lua}"')
+        pattern = re.compile(rf"REQUEST={uid} VALUE=(.*)")
+        deadline = time.monotonic() + timeout
+        while (left := deadline - time.monotonic()) > 0:
+            try:
+                line = self._lines.get(timeout=left)
+            except queue.Empty:
+                break
+            if m := pattern.fullmatch(line):
+                return m.group(1)
+        return None
 
     def _send(self, cmd: str) -> None:
+        if len(cmd.encode()) > MAX_COMMAND:
+            raise ValueError(f"console command is {len(cmd.encode())} chars, max {MAX_COMMAND}")
         body = cmd.encode() + b"\x00"
-        try:
-            self._sock.sendall(HEADER.pack(b"CMND", VERSION, HEADER.size + len(body), 0) + body)
-        except OSError as e:
-            raise VConsoleError(f"send failed: {e}") from e
-
-    def _next(self, deadline: float, cmd: str) -> str:
-        try:
-            line = self._lines.get(timeout=max(0.0, deadline - time.monotonic()))
-        except queue.Empty:
-            raise VConsoleError(f"timed out waiting for output of {cmd!r}") from None
-        if line is None:
-            raise VConsoleError(f"connection lost while running {cmd!r}") from self._error
-        return line
+        self._sock.sendall(HEADER.pack(b"CMND", VERSION, HEADER.size + len(body), 0) + body)
 
     def _recv(self, n: int) -> bytes:
         buf = bytearray()
@@ -106,8 +107,15 @@ class VConsoleClient:
                 kind, _, length, _ = HEADER.unpack(self._recv(HEADER.size))
                 body = self._recv(length - HEADER.size)
                 if kind == b"PRNT":
-                    self._lines.put(body[28:].split(b"\x00", 1)[0].decode(errors="replace").rstrip("\n"))
-        except Exception as e:
-            self._error = e
-        finally:
-            self._lines.put(None)
+                    self._lines.put(body[28:].split(b"\x00", 1)[0].decode(errors="replace").rstrip("\r\n"))
+        except OSError:
+            pass
+
+
+if __name__ == "__main__":
+    # python vconsole_client.py getpos  -> runs the command and prints its output
+    import sys
+
+    with VConsoleClient() as vc:
+        out = vc.run_cmd(" ".join(sys.argv[1:]))
+    print(out)
