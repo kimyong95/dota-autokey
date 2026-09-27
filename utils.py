@@ -4,11 +4,13 @@ import threading
 import time
 from pathlib import Path
 
-import keyboard
 import numpy as np
+from pynput.keyboard import Controller, Key
 
 from install_configs import find_dota
 from window_utils import dota_is_foreground
+
+controller = Controller()   # not keyboard.send, which stops keyboard's hooks for every key while sending
 
 
 class CameraScreenProjection:
@@ -81,7 +83,7 @@ class Camera:
     LINE_RE = re.compile(rb"Camera position:\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)")
     TAIL_BYTES = 2048       # one F10 round logs ~150 bytes; 99 % of gaps between camera lines < 900
 
-    def __init__(self, interval=0.05, key="f10"):
+    def __init__(self, interval=0.05, key=Key.f10):
         self.position = None
         self.log = find_dota() / "game" / "dota" / "console.log"
         if not self.log.exists():
@@ -92,13 +94,82 @@ class Camera:
         with self.log.open("rb") as f:
             while True:
                 if dota_is_foreground():
-                    keyboard.press_and_release(key)
+                    controller.tap(key)
                 time.sleep(interval)
                 f.seek(max(0, f.seek(0, 2) - self.TAIL_BYTES))     # Dota empties the log at each launch
                 tail = f.read()
                 tail = tail[:tail.rfind(b"\n") + 1]     # drop a line Dota is still writing
                 if matches := self.LINE_RE.findall(tail):
                     self.position = tuple(map(float, matches[-1]))    # the latest one written
+
+
+class HeroPosition:
+    """The hero's (x, y, yaw) from GSI: as last reported, or forecast between posts so overlays move smoothly.
+
+        hero_position = utils.HeroPosition()
+        hero_position.update(time.monotonic(), x, y, yaw)     # on each GSI post
+        hero_position.get()                                   # as last reported; for decisions
+        hero_position.forecast(time.monotonic())              # extrapolated to then; for drawing only
+                                                              # both None before the first post
+
+    The forecast: position keeps the velocity between the last two posts, which is zero once the hero stops.
+    Facing keeps turning at the rate between the last two posts, at most TURN_RATE, and while the hero moves
+    not past his direction of travel: Dota moves him in the new direction at once and turns his facing towards
+    it. yaw is in degrees, 0 = +x, 90 = +y. Measured with record-hero-pos.py. Teleports are not handled.
+    """
+
+    TURN_RATE = 660     # degrees per second, Invoker's; items do not change it
+
+    def __init__(self):
+        self.last_timestep = None
+        self.last_position = None               # (x, y, yaw)
+        self.last_velocity = (0.0, 0.0, 0.0)    # (x, y, yaw) per second, between the last two posts
+
+    def update(self, now, x, y, yaw):
+        velocity = (0.0, 0.0, 0.0)
+        if self.last_position:
+            last_x, last_y, last_yaw = self.last_position
+            elapsed = now - self.last_timestep
+            turned = (yaw - last_yaw + 180) % 360 - 180     # in -180..180
+            velocity = ((x - last_x) / elapsed, (y - last_y) / elapsed,
+                        np.clip(turned / elapsed, -self.TURN_RATE, self.TURN_RATE))
+        self.last_timestep, self.last_position, self.last_velocity = now, (x, y, yaw), velocity
+
+    def get(self):
+        return self.last_position
+
+    def forecast(self, now):
+        if self.last_position is None:
+            return None
+        x, y, yaw = self.last_position
+        x_velocity, y_velocity, yaw_velocity = self.last_velocity
+        ahead = now - self.last_timestep
+        turn = yaw_velocity * ahead
+        if x_velocity or y_velocity:
+            travel = (math.degrees(math.atan2(y_velocity, x_velocity)) - yaw + 180) % 360 - 180
+            turn = np.clip(turn, min(0, travel), max(0, travel))    # not past the direction of travel
+        return x + x_velocity * ahead, y + y_velocity * ahead, yaw + turn
+
+
+class DedupeQueue:
+    """FIFO queue that drops items already waiting in it."""
+
+    def __init__(self):
+        self.items = []
+        self.cond = threading.Condition()
+
+    def put(self, item):
+        with self.cond:
+            if item not in self.items:
+                self.items.append(item)
+                self.cond.notify()
+
+    def get(self, timeout=None):
+        """The oldest item; None if none comes within `timeout` seconds (None: wait for ever)."""
+        with self.cond:
+            if not self.cond.wait_for(lambda: self.items, timeout):
+                return None
+            return self.items.pop(0)
 
 
 def updated_abilities(curr_abilities, prev_abilities, filter_info):

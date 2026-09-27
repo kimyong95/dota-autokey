@@ -42,20 +42,12 @@ SHADOW_FILL, SHADOW_SPREAD, SHADOW_BLUR, SHADOW_OFFSET = (0, 0, 0, 235), 2, 2, (
 FONT_FILE = ASSETS / "radiance-regular.otf"
 NUMBER_FONT = ImageFont.truetype(str(FONT_FILE) if FONT_FILE.exists() else "arialbd.ttf", 48)
 
-# Autokey trigger keys in panel order:
+# Panel slot (column, row) of each autokey trigger key:
 # [q][w][e][r][o][p]
 # [-]   [d][f][4][5]
-LAYOUT = {
-    "invoker_ice_wall":        (0, 0),
-    "invoker_sun_strike":      (1, 0),
-    "invoker_chaos_meteor":    (2, 0),
-    "invoker_deafening_blast": (3, 0),
-    "invoker_forge_spirit":    (2, 1),
-    "invoker_alacrity":        (3, 1),
-    "invoker_cold_snap":       (4, 0),
-    "invoker_tornado":         (5, 0),
-    "invoker_emp":             (4, 1),
-    "invoker_ghost_walk":      (5, 1),
+KEY_LAYOUT = {
+    "q": (0, 0), "w": (1, 0), "e": (2, 0), "r": (3, 0), "o": (4, 0), "p": (5, 0),
+    "d": (2, 1), "f": (3, 1), "4": (4, 1), "5": (5, 1),
 }
 
 
@@ -142,21 +134,22 @@ class InvokerHubOverlay(LogicalWindow):
     """Spell panel above the HUD, shown while alt is held. Create on the Qt thread.
 
     get_state() -> {spell: (seconds_remaining, cooldown_fraction, invoked)}
+    autokey: {trigger key: spell}; each spell is drawn in its key's KEY_LAYOUT slot
     """
     show_requested = Signal(bool)
 
-    def __init__(self, get_state):
+    def __init__(self, get_state, autokey):
         step = SLOT + PAD
         super().__init__(QRectF(0, 0, PANEL_WIDTH, PANEL_HEIGHT))
         self.setWindowOpacity(OVERLAY_OPACITY)
         self.get_state = get_state
         self.state = {}
-        self.spell_rects = {
-            spell: QRectF(PAD + col * step, PAD + row * step, SLOT, SLOT)
-            for spell, (col, row) in LAYOUT.items()
-        }
+        self.spell_rects = {}
+        for key, spell in autokey.items():
+            col, row = KEY_LAYOUT[key]
+            self.spell_rects[spell] = QRectF(PAD + col * step, PAD + row * step, SLOT, SLOT)
         self.prepare_assets()
-        self.icons = {spell: QPixmap(str(ASSETS / f"{spell}.png")) for spell in LAYOUT}
+        self.icons = {spell: QPixmap(str(ASSETS / f"{spell}.png")) for spell in self.spell_rects}
         self.show_requested.connect(self.set_shown, Qt.QueuedConnection)
         self.follow_hud(HUD_BAR_TOP - LIP, ABILITY_ROW_SHIFT)
         timer = QTimer(self)
@@ -169,7 +162,7 @@ class InvokerHubOverlay(LogicalWindow):
 
     def prepare_assets(self):
         ASSETS.mkdir(parents=True, exist_ok=True)
-        for spell in LAYOUT:
+        for spell in self.spell_rects:
             target = ASSETS / f"{spell}.png"
             if target.exists():
                 continue

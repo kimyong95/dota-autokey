@@ -1,24 +1,19 @@
-"""Invoker Ice Wall preview: where the wall lands for the current facing, drawn on the terrain.
-
-The wall is the line WALL_DISTANCE in front of Invoker and perpendicular to his facing, sampled
-every SAMPLE_STEP world units; each sample is projected with utils.CameraScreenProjection, which puts
-it on the measured terrain, so the drawn polyline follows slopes and cliffs. The camera position comes
-from the utils.Camera passed in (F10 -> console.log, needs -condebug).
-"""
+"""Invoker Ice Wall preview: the wall for the current facing, drawn on the terrain."""
 import math
-from PySide6.QtCore import QPointF, Qt, QTimer, Signal, Slot
+import time
+from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
 import utils
 from window_utils import hud_surface, place_overlay
 
 WALL_DISTANCE, WALL_LENGTH = 200, 1200
-SAMPLE_STEP = 50                # world units between projected wall points
+SAMPLE_STEP = 50
+SHOW_SECONDS, FADE_SECONDS = 0.5, 0.5
 REFRESH_MS = 16
 
 
 def wall_points(x, y, yaw):
-    """World (x, y) samples along the Ice Wall of a hero at (x, y) facing `yaw` degrees."""
     fx, fy = math.cos(math.radians(yaw)), math.sin(math.radians(yaw))
     cx, cy = x + WALL_DISTANCE * fx, y + WALL_DISTANCE * fy
     offsets = range(-WALL_LENGTH // 2, WALL_LENGTH // 2 + 1, SAMPLE_STEP)
@@ -26,12 +21,11 @@ def wall_points(x, y, yaw):
 
 
 class InvokerIcewallOverlay(QWidget):
-    """Ice Wall line on the ground, shown on request. Create on the Qt thread.
+    """Shown for SHOW_SECONDS after each activate(), then fades out over FADE_SECONDS. Create on the Qt thread.
 
-    get_state() -> the hero's (x, y, yaw) with yaw in degrees (0 = +x, 90 = +y), or None
+    get_state() -> the hero's (x, y, yaw in degrees), or None
     camera: utils.Camera
     """
-    show_requested = Signal(bool)
 
     def __init__(self, get_state, camera):
         super().__init__()
@@ -41,38 +35,43 @@ class InvokerIcewallOverlay(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.get_state = get_state
         self.camera = camera
-        self.projection = None  # set while shown, for the viewport at that time
+        self.activated_at = -math.inf
+        self.projection = None
         self.origin = QPointF()
         self.points = []
-        self.show_requested.connect(self.set_shown, Qt.QueuedConnection)
+        self.opacity = 1.0
         timer = QTimer(self)
         timer.timeout.connect(self.refresh)
         timer.start(REFRESH_MS)
 
-    @Slot(bool)
-    def set_shown(self, shown):
-        if shown and self.projection is None:
+    def activate(self):
+        self.activated_at = time.monotonic()
+
+    def refresh(self):
+        shown_for = time.monotonic() - self.activated_at
+        if shown_for > SHOW_SECONDS + FADE_SECONDS:
+            self.projection = None
+            self.hide()
+            return
+        if self.projection is None:
             bounds = hud_surface()[0]
             self.projection = utils.CameraScreenProjection(bounds)
             self.origin = QPointF(*bounds[:2])
             self.resize(*(math.ceil(v / self.devicePixelRatioF()) for v in bounds[2:]))
             place_overlay(int(self.winId()), bounds)
-        elif not shown:
-            self.projection = None
-            self.hide()
-
-    def refresh(self):
         hero, camera = self.get_state(), self.camera.position
-        if self.projection is None or hero is None or camera is None:
+        if hero is None or camera is None:
             return
         self.points = [QPointF(*self.projection.world_to_screen(camera, p)) - self.origin
                        for p in wall_points(*hero)]
+        self.opacity = min(1.0, (SHOW_SECONDS + FADE_SECONDS - shown_for) / FADE_SECONDS)
         self.show()
         self.update()
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
+        painter.setOpacity(self.opacity)
         painter.scale(1 / self.devicePixelRatioF(), 1 / self.devicePixelRatioF())
         line = QPolygonF(self.points)
         painter.setPen(QPen(QColor(70, 255, 80, 80), 16, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))

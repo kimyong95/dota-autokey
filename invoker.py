@@ -5,10 +5,11 @@ import keyboard
 from keyboard import KEY_UP, KEY_DOWN
 import uvicorn
 from fastapi import FastAPI, Request
+from pynput.keyboard import Controller, Key
 from PySide6.QtWidgets import QApplication
 
 import invoker_hub_overlay
-import invoker_icewall_overlay
+import invoker_icewall_steering
 import invoker_tornado_overlay
 import utils
 from utils import updated_abilities
@@ -17,7 +18,7 @@ WAIT_INVOKE_TIMEOUT = 0.2
 SLOT_KEYS = {"ability3": "c", "ability4": "v"}   # invoked slot -> cast key
 
 KEY_BINDING = {
-    "invoker_quas": "j", "invoker_wex": "k", "invoker_exort": "l", "invoker_invoke": 12,
+    "invoker_quas": "j", "invoker_wex": "k", "invoker_exort": "l", "invoker_invoke": "-",
 }
 
 AUTOKEY = {
@@ -29,6 +30,7 @@ AUTOKEY = {
     "o": "invoker_cold_snap", "p": "invoker_tornado",
     "4": "invoker_emp", "5": "invoker_ghost_walk",
 }
+STEER_KEYS = {"f15": "walk", "f13": "left part", "f14": "right part"}   # Synapse: wheel press, tilt left, tilt right
 
 INVOKE_RECIPES = {
     "invoker_cold_snap":         ["invoker_quas",  "invoker_quas",  "invoker_quas",  "invoker_invoke"],
@@ -45,36 +47,17 @@ INVOKE_RECIPES = {
 
 CAST_IMEDIATELY = set(INVOKE_RECIPES) - {"invoker_ice_wall", "invoker_sun_strike", "invoker_tornado"}
 
-class DedupeQueue:
-    """FIFO queue that drops items already waiting in it."""
-
-    def __init__(self):
-        self.items = []
-        self.cond = threading.Condition()
-
-    def put(self, item):
-        with self.cond:
-            if item not in self.items:
-                self.items.append(item)
-                self.cond.notify()
-
-    def get(self):
-        with self.cond:
-            while not self.items:
-                self.cond.wait()
-            return self.items.pop(0)
-
-
 invoked = {}                       # spell -> cast key, updated by GSI
 ability_levels = {}                # ability name -> level, updated by GSI
-hero_minimap_state = None          # (x, y, yaw) from GSI's minimap block; yaw 0 = +x, 90 = +y
+hero_position = utils.HeroPosition()   # from GSI's minimap block; yaw 0 = +x, 90 = +y
 tornado_cast_state = None          # (release time, hero x, hero y) of the last Tornado cast
 ready_at = {}                      # spell -> monotonic time it comes off cooldown
 cooldown_totals = {}               # duration observed at the start of each cooldown
 state_lock = threading.Lock()
-event_queue = DedupeQueue()        # trigger events awaiting the worker
+event_queue = utils.DedupeQueue()  # trigger events awaiting the worker
+controller = Controller()          # not keyboard.send, which stops keyboard's hooks for every key while sending
 hub_overlay = None                 # created on the Qt (main) thread
-icewall_overlay = None
+icewall_steering = None
 tornado_overlay = None
 
 app = FastAPI()
@@ -111,17 +94,12 @@ def hub_overlay_state():
     with state_lock:
         now = time.monotonic()
         result = {}
-        for spell in invoker_hub_overlay.LAYOUT:
+        for spell in AUTOKEY.values():
             left = max(0.0, ready_at.get(spell, 0) - now)
             total = cooldown_totals.get(spell, left)
             result[spell] = (left, min(1.0, left / total) if total > 0 else 0,
                              spell in invoked)
         return result
-
-
-def icewall_overlay_state():
-    """The hero's (x, y, yaw), or None before GSI has reported it."""
-    return hero_minimap_state
 
 
 def tornado_overlay_state():
@@ -138,7 +116,8 @@ def tornado_overlay_state():
 
 @app.post("/")
 async def gsi(request: Request):
-    global invoked, ability_levels, hero_minimap_state
+    global invoked, ability_levels
+    now = time.monotonic()
     payload = await request.json()
     abilities = payload.get("abilities", {})
     prev_abilities = payload.get("previously", {}).get("abilities", {})
@@ -148,7 +127,7 @@ async def gsi(request: Request):
         track_cooldown(abilities, prev_abilities)
     for unit in (payload.get("minimap") or {}).values():
         if isinstance(unit, dict) and unit.get("image") == "minimap_herocircle_self":
-            hero_minimap_state = (unit["xpos"], unit["ypos"], unit["yaw"])
+            hero_position.update(now, unit["xpos"], unit["ypos"], unit["yaw"])
     return {}
 
 
@@ -158,23 +137,20 @@ def cast_spell(spell, event_type):
     if cast_key is None:
         return
     if spell in CAST_IMEDIATELY and event_type == KEY_DOWN:
-        keyboard.press_and_release(cast_key)
+        controller.tap(cast_key)
     elif event_type == KEY_DOWN:
-        keyboard.press(cast_key)
+        controller.press(cast_key)
     elif event_type == KEY_UP:
-        keyboard.release(cast_key)
+        controller.release(cast_key)
 
 
 def run(spell, event_type):
     global tornado_cast_state
-    # Ice Wall is aimed while its key is held and cast on release: preview it meanwhile
-    if spell == "invoker_ice_wall":
-        icewall_overlay.show_requested.emit(event_type == KEY_DOWN)
 
     # invoke
     if event_type == KEY_DOWN and spell not in invoked:
         for orb in INVOKE_RECIPES[spell]:
-            keyboard.press_and_release(KEY_BINDING[orb])
+            controller.tap(KEY_BINDING[orb])
 
     # wait until invoked
     deadline = time.monotonic() + WAIT_INVOKE_TIMEOUT
@@ -188,10 +164,19 @@ def run(spell, event_type):
     if event_type == KEY_DOWN and not tornado_overlay.is_lit(spell):
         return
 
+    # special case for scepter: left ctrl + Sun Strike sends alt + its cast key, Dota's self-cast (Cataclysm);
+    # ctrl is released first, since Dota's ctrl + ability key learns the ability instead
+    if spell == "invoker_sun_strike" and keyboard.is_pressed("left ctrl"):
+        if event_type == KEY_DOWN and (cast_key := invoked.get(spell)):
+            controller.release(Key.ctrl_l)
+            with controller.pressed(Key.alt_l):
+                controller.tap(cast_key)
+        return
+
     # Tornado is cast on release; remember when and from where for the combo ring
-    if (spell == "invoker_tornado" and event_type == KEY_UP and spell in invoked
-            and time.monotonic() >= ready_at.get(spell, 0) and hero_minimap_state):
-        tornado_cast_state = (time.monotonic(), *hero_minimap_state[:2])
+    now = time.monotonic()
+    if (spell == "invoker_tornado" and event_type == KEY_UP and spell in invoked and now >= ready_at.get(spell, 0) and (hero := hero_position.get())):
+        tornado_cast_state = (now, *hero[:2])
 
     cast_spell(spell, event_type)
 
@@ -207,8 +192,8 @@ if __name__ == "__main__":
     qt = QApplication([])
     qt.setQuitOnLastWindowClosed(False)
     camera = utils.Camera()        # one F10 poller, shared by the overlays that need the camera
-    hub_overlay = invoker_hub_overlay.InvokerHubOverlay(hub_overlay_state)
-    icewall_overlay = invoker_icewall_overlay.InvokerIcewallOverlay(icewall_overlay_state, camera)
+    hub_overlay = invoker_hub_overlay.InvokerHubOverlay(hub_overlay_state, AUTOKEY)
+    icewall_steering = invoker_icewall_steering.IcewallSteering(STEER_KEYS, hero_position, camera)
     tornado_overlay = invoker_tornado_overlay.InvokerTornadoOverlay(tornado_overlay_state, camera)
 
     for key, spell in AUTOKEY.items():
