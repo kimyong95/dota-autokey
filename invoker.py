@@ -30,7 +30,7 @@ AUTOKEY = {
     "o": "invoker_cold_snap", "p": "invoker_tornado",
     "4": "invoker_emp", "5": "invoker_ghost_walk",
 }
-STEER_KEYS = {"f15": "walk", "f13": "left part", "f14": "right part"}   # Synapse: wheel press, tilt left, tilt right
+STEER_KEYS = {"f13": "walk", "f14": "left part", "f15": "right part"}   # Synapse: wheel press, tilt left, tilt right
 
 INVOKE_RECIPES = {
     "invoker_cold_snap":         ["invoker_quas",  "invoker_quas",  "invoker_quas",  "invoker_invoke"],
