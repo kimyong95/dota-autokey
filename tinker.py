@@ -1,14 +1,12 @@
 import threading
 import keyboard
-import uvicorn
-from fastapi import FastAPI, Request
 from pynput import keyboard as pk
 import time
-from utils import updated_abilities
+from tinker_ability_monitor import TinkerAbilityMonitor
 
 LOOP_INTERVAL = 0.03
 
-controller = pk.Controller() 
+controller = pk.Controller()
 
 KEY_BINDING = {
     "tinker_laser":          "q",
@@ -16,83 +14,59 @@ KEY_BINDING = {
     "tinker_deploy_turrets": "e",
     "tinker_rearm":          "f",
 }
-AUTOKEY = {
-    "o": ["tinker_warp_grenade", "tinker_laser", "tinker_rearm"],
-    "p": ["tinker_deploy_turrets", "tinker_warp_grenade", "tinker_laser", "tinker_rearm"],
-}
+AUTOKEY = "f13"
+COMBO = ["tinker_warp_grenade", "tinker_laser", "tinker_rearm"]
 EXTRA_KEYS = ["2", "6"]
 
-castable = {a: True for combo in AUTOKEY.values() for a in combo}
-
-active_trigger = None
+monitor = None                      # TinkerAbilityMonitor: the ability states off the screen
+held = threading.Event()            # AUTOKEY is down
 suppress_rearm = False
-wake = threading.Event()
-app = FastAPI()
 
 def press_and_release(key):
     controller.press(key)
     controller.release(key)
 
-@app.post("/")
-async def gsi(request: Request):
-    payload = await request.json()
-    abilities = payload.get("abilities", {})
-    prev_abilities = payload.get("previously", {}).get("abilities", {})
-
-    for ability in updated_abilities(abilities, prev_abilities, "can_cast").values():
-        if ability["name"] in castable:
-            castable[ability["name"]] = ability["can_cast"]
-            wake.set()
-    return {}
-
 
 def on_trigger(event):
-    global active_trigger, suppress_rearm
-    if event.event_type == keyboard.KEY_DOWN and active_trigger is None:
-        active_trigger = event.name
+    global suppress_rearm
+    if event.event_type == keyboard.KEY_UP:
+        held.clear()
+    elif not held.is_set():         # a fresh press, not auto-repeat
         suppress_rearm = False
-        wake.set()                       # wake immediately on key press
-    elif event.event_type == keyboard.KEY_UP and active_trigger == event.name:
-        active_trigger = None
+        held.set()
 
 
 def on_interrupt(key, injected):
     global suppress_rearm
     if injected:                     # one of our own sent keys -> not a real interrupt
         return
-    if active_trigger is None:       # only relevant while an autokey is active
+    if not held.is_set():            # only relevant while the autokey is active
         return
-    if isinstance(key, pk.KeyCode) and key.char.lower() in AUTOKEY:
-        return                        # ignore other autokeys
+    if key == pk.Key[AUTOKEY]:
+        return                        # the autokey's own auto-repeat
     suppress_rearm = True
 
 def worker():
-    last_fire = 0.0
     while True:
-        trigger = active_trigger          # single read, top of every iteration
-        if trigger is None:
-            wake.wait()
-            wake.clear()
-            continue
-
-        wait_left = LOOP_INTERVAL - (time.monotonic() - last_fire)
-        if wait_left > 0:
-            wake.wait(timeout=wait_left)
-            continue                      # loop back → re-reads trigger fresh
-
-        combo = AUTOKEY[trigger]          # trigger still current: no wait since read
-        to_fire = next((a for a in combo if castable.get(a)), combo[0])
+        held.wait()
+        monitor.activate()            # keeps it watching while AUTOKEY is held; all castable until its first frame
+        states = monitor.states
+        # casting counts as not castable, so the next ability in the combo fires
+        to_fire = next((a for a in COMBO if states[a] == "castable"), COMBO[0])
         if not (suppress_rearm and to_fire == "tinker_rearm"):
             press_and_release(KEY_BINDING[to_fire])
         for k in EXTRA_KEYS:
             press_and_release(k)
-        last_fire = time.monotonic()
+        time.sleep(LOOP_INTERVAL)
 
 
 if __name__ == "__main__":
-    for trigger_key in AUTOKEY:
-        keyboard.hook_key(trigger_key, on_trigger, suppress=True)
+    monitor = TinkerAbilityMonitor()
+    keyboard.hook_key(AUTOKEY, on_trigger, suppress=True)
     threading.Thread(target=worker, daemon=True).start()
     listener = pk.Listener(on_press=on_interrupt)
     listener.start()
-    uvicorn.run(app, host="127.0.0.1", port=3000, log_level="warning")
+    try:
+        keyboard.wait()
+    except KeyboardInterrupt:
+        pass

@@ -33,6 +33,38 @@ def place_overlay(window, bounds):
     win32gui.SetWindowPos(window, win32con.HWND_TOPMOST, *bounds, win32con.SWP_NOACTIVATE)
 
 
+class LogicalScreen:
+    """Logical pixels (a 16:9 screen `design_height` tall) to screen pixels, the way Dota scales its HUD.
+
+        screen = LogicalScreen(*hud_surface())
+        screen.rect(1561, 1894, 96, 96)     # a rect measured off a 4K screenshot -> (left, top, width, height)
+
+    The HUD scales with the render height and stays anchored to the bottom centre, so a HUD spot measured
+    on a 4K screenshot lands on the same spot at any resolution or aspect ratio. Screen pixels are physical
+    only in a DPI-aware process: Qt makes its process aware; others must call SetProcessDpiAwarenessContext.
+    """
+
+    def __init__(self, bounds, render_size, design_height=2160):
+        self.bounds, self.render_size = bounds, render_size
+        self.design_height = design_height
+        x, y, width, height = bounds
+        render_width, render_height = render_size
+        self.scale_y = height / design_height
+        self.scale_x = render_height / design_height * width / render_width
+
+    def point(self, x, y):
+        """Screen position of a logical point, unrounded."""
+        left, top, width, height = self.bounds
+        return (left + width / 2 + (x - self.design_height * 8 / 9) * self.scale_x,
+                top + height + (y - self.design_height) * self.scale_y)
+
+    def rect(self, x, y, width, height):
+        """Screen pixel rect (left, top, width, height) of a logical rect; edges round, so neighbours tile."""
+        left, top = map(round, self.point(x, y))
+        right, bottom = map(round, self.point(x + width, y + height))
+        return left, top, right - left, bottom - top
+
+
 class LogicalWindow(QWidget):
     """Paint in design units and anchor to Dota's HUD ability row."""
 
@@ -59,23 +91,20 @@ class LogicalWindow(QWidget):
         self.align_to_display(force=True)
 
     def align_to_display(self, force=False):
-        bounds, render_size = hud_surface()
+        screen = LogicalScreen(*hud_surface(), self.design_height)
         dpi = self.devicePixelRatioF()
-        if not force and (bounds, render_size, dpi) == self.last_geometry:
+        if not force and (screen.bounds, screen.render_size, dpi) == self.last_geometry:
             return
-        x, y, width, height = bounds
-        render_width, render_height = render_size
-        scale_y = height / self.design_height
-        scale_x = render_height / self.design_height * width / render_width
-        self.pixel_size = (round(self.design_rect.width() * scale_x),
-                           round(self.design_rect.height() * scale_y))
+        x, y, width, height = screen.bounds
+        self.pixel_size = (round(self.design_rect.width() * screen.scale_x),
+                           round(self.design_rect.height() * screen.scale_y))
         self.resize(*(math.ceil(side / dpi) for side in self.pixel_size))
         panel_width, panel_height = self.pixel_size
         place_overlay(int(self.winId()),
-                      (x + round((width - panel_width) / 2) - round(self.center_offset * scale_x),
-                       y + height - round(self.bottom_offset * scale_y) - panel_height,
+                      (x + round((width - panel_width) / 2) - round(self.center_offset * screen.scale_x),
+                       y + height - round(self.bottom_offset * screen.scale_y) - panel_height,
                        panel_width, panel_height))
-        self.last_geometry = bounds, render_size, dpi
+        self.last_geometry = screen.bounds, screen.render_size, dpi
         self.update()
 
     def logical_painter(self):
