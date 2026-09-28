@@ -23,7 +23,7 @@ KEY_BINDING = {
 
 AUTOKEY = {
     "q": "invoker_ice_wall",
-    "w": "invoker_sun_strike",
+    "w": "invoker_sun_strike", "g": "invoker_cataclysm",
     "e": "invoker_chaos_meteor",
     "r": "invoker_deafening_blast",
     "d": "invoker_forge_spirit", "f": "invoker_alacrity",
@@ -31,6 +31,7 @@ AUTOKEY = {
     "4": "invoker_emp", "5": "invoker_ghost_walk",
 }
 STEER_KEYS = {"f13": "walk", "f14": "left part", "f15": "right part"}   # Synapse: wheel press, tilt left, tilt right
+ALT_CAST = {"invoker_cataclysm": "invoker_sun_strike"}   # spell -> the invoked spell cast with alt, Dota's self-cast
 
 INVOKE_RECIPES = {
     "invoker_cold_snap":         ["invoker_quas",  "invoker_quas",  "invoker_quas",  "invoker_invoke"],
@@ -133,10 +134,13 @@ async def gsi(request: Request):
 
 def cast_spell(spell, event_type):
 
-    cast_key = invoked.get(spell)
+    cast_key = invoked.get(ALT_CAST.get(spell, spell))
     if cast_key is None:
         return
-    if spell in CAST_IMEDIATELY and event_type == KEY_DOWN:
+    if spell in ALT_CAST and event_type == KEY_DOWN:
+        with controller.pressed(Key.alt_l):
+            controller.tap(cast_key)
+    elif spell in CAST_IMEDIATELY and event_type == KEY_DOWN:
         controller.tap(cast_key)
     elif event_type == KEY_DOWN:
         controller.press(cast_key)
@@ -146,31 +150,23 @@ def cast_spell(spell, event_type):
 
 def run(spell, event_type):
     global tornado_cast_state
+    ability = ALT_CAST.get(spell, spell)   # the invoked spell that casts it
 
     # invoke
-    if event_type == KEY_DOWN and spell not in invoked:
-        for orb in INVOKE_RECIPES[spell]:
+    if event_type == KEY_DOWN and ability not in invoked:
+        for orb in INVOKE_RECIPES[ability]:
             controller.tap(KEY_BINDING[orb])
 
     # wait until invoked
     deadline = time.monotonic() + WAIT_INVOKE_TIMEOUT
-    while spell not in invoked and time.monotonic() < deadline:
+    while ability not in invoked and time.monotonic() < deadline:
         time.sleep(0.005)
 
     if keyboard.is_pressed("alt"):
         return
 
     # during a Tornado combo, a follow-up pressed before its arc lights up is not cast
-    if event_type == KEY_DOWN and not tornado_overlay.is_lit(spell):
-        return
-
-    # special case for scepter: left ctrl + Sun Strike sends alt + its cast key, Dota's self-cast (Cataclysm);
-    # ctrl is released first, since Dota's ctrl + ability key learns the ability instead
-    if spell == "invoker_sun_strike" and keyboard.is_pressed("left ctrl"):
-        if event_type == KEY_DOWN and (cast_key := invoked.get(spell)):
-            controller.release(Key.ctrl_l)
-            with controller.pressed(Key.alt_l):
-                controller.tap(cast_key)
+    if event_type == KEY_DOWN and not tornado_overlay.is_lit(ability):
         return
 
     # Tornado is cast on release; remember when and from where for the combo ring
@@ -192,7 +188,8 @@ if __name__ == "__main__":
     qt = QApplication([])
     qt.setQuitOnLastWindowClosed(False)
     camera = utils.Camera()        # one F10 poller, shared by the overlays that need the camera
-    hub_overlay = invoker_hub_overlay.InvokerHubOverlay(hub_overlay_state, AUTOKEY)
+    hub_overlay = invoker_hub_overlay.InvokerHubOverlay(
+        hub_overlay_state, {key: spell for key, spell in AUTOKEY.items() if spell not in ALT_CAST})
     icewall_steering = invoker_icewall_steering.IcewallSteering(STEER_KEYS, hero_position, camera)
     tornado_overlay = invoker_tornado_overlay.InvokerTornadoOverlay(tornado_overlay_state, camera)
 

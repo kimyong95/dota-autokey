@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import yaml
 from pynput.keyboard import Controller, Key
 
 from install_configs import find_dota
@@ -170,6 +171,43 @@ class DedupeQueue:
             if not self.cond.wait_for(lambda: self.items, timeout):
                 return None
             return self.items.pop(0)
+
+
+def key_name(key):
+    """A pynput key's name: '0'-'9' or 'a'-'z' whatever modifiers are held, or a special key's ("f13", "space");
+    None for other keys.
+
+    Digits and letters from the virtual-key code, since the character changes with modifiers (Ctrl + Z is '\\x1a')."""
+    if isinstance(key, Key):
+        return key.name
+    vk = getattr(key, "vk", None)
+    return chr(vk).lower() if vk is not None and (0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A) else None
+
+
+yaml_lock = threading.Lock()
+
+
+def read_yaml_list(path, section):
+    """The list `section` of the YAML file at `path`, as strings; [] if the file or the section is missing."""
+    config = yaml.safe_load(path.read_text()) if path.exists() else None
+    return [str(item) for item in (config or {}).get(section) or []]
+
+
+def toggle_yaml_list(path, section, item):
+    """Add `item` to the list `section` of the YAML file at `path`, or remove it if there; returns the new list.
+
+    Rereads the file under a lock first, so the other sections stay as their writers left them.
+    """
+    with yaml_lock:
+        config = (yaml.safe_load(path.read_text()) if path.exists() else None) or {}
+        items = [str(i) for i in config.get(section) or []]
+        if item in items:
+            items.remove(item)
+        else:
+            items.append(item)
+        config[section] = items
+        path.write_text(yaml.safe_dump(config, sort_keys=False))
+    return items
 
 
 def updated_abilities(curr_abilities, prev_abilities, filter_info):
