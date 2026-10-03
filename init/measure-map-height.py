@@ -1,6 +1,6 @@
 """Measure the ground height of the whole Dota map, every unit, and save it as a numpy array.
 
-Run: uv run python measure-map-data.py [--out data/map-height.npy]
+Run: PYTHONPATH=. python init/measure-map-height.py [--out data/map-height.npy]
 Needs dota2.exe launched with -tools (VConsole on 29000) and a map loaded.
 
 Covers the full world bounds (GetWorldMinX..GetWorldMaxX, GetWorldMinY..GetWorldMaxY).
@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-from vconsole_client import VConsoleClient
+from utils.vconsole import VConsoleClient
 
 CHUNK = 3000
 VSCRIPTS = Path(r"C:\Program Files (x86)\Steam\steamapps\common\dota 2 beta\game\dota\scripts\vscripts")

@@ -4,8 +4,8 @@ import time
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import QWidget
-import utils
-from window_utils import hud_surface, place_overlay
+from utils.camera import CameraScreenProjection
+from utils.window import hud_surface, place_overlay
 
 WALL_DISTANCE, WALL_LENGTH = 200, 1200
 SAMPLE_STEP = 50
@@ -23,18 +23,16 @@ def wall_points(x, y, yaw):
 class InvokerIcewallOverlay(QWidget):
     """Shown for SHOW_SECONDS after each activate(), then fades out over FADE_SECONDS. Create on the Qt thread.
 
-    get_state() -> the hero's (x, y, yaw in degrees), or None
-    camera: utils.Camera
+    memory: utils.memory.MemoryReader
     """
 
-    def __init__(self, get_state, camera):
+    def __init__(self, memory):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
                             | Qt.Tool | Qt.WindowTransparentForInput)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.get_state = get_state
-        self.camera = camera
+        self.memory = memory
         self.activated_at = -math.inf
         self.projection = None
         self.origin = QPointF()
@@ -55,15 +53,16 @@ class InvokerIcewallOverlay(QWidget):
             return
         if self.projection is None:
             bounds = hud_surface()[0]
-            self.projection = utils.CameraScreenProjection(bounds)
+            self.projection = CameraScreenProjection(bounds)
             self.origin = QPointF(*bounds[:2])
             self.resize(*(math.ceil(v / self.devicePixelRatioF()) for v in bounds[2:]))
             place_overlay(int(self.winId()), bounds)
-        hero, camera = self.get_state(), self.camera.position
-        if hero is None or camera is None:
+        hero, matrix = self.memory.get_hero_position(), self.memory.get_view_matrix()
+        if hero is None or matrix is None:
             return
-        self.points = [QPointF(*self.projection.world_to_screen(camera, p)) - self.origin
-                       for p in wall_points(*hero)]
+        x, y, _, yaw = hero
+        self.points = [QPointF(*self.projection.world_to_screen(matrix, p)) - self.origin
+                       for p in wall_points(x, y, yaw)]
         self.opacity = min(1.0, (SHOW_SECONDS + FADE_SECONDS - shown_for) / FADE_SECONDS)
         self.show()
         self.update()

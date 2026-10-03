@@ -9,9 +9,9 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (QColor, QImage, QLinearGradient, QPainter, QPen,
                            QPixmap, QPolygonF)
-from window_utils import LogicalWindow
+from utils.window import LogicalWindow
 
-ASSETS = Path(__file__).parent / "assets"
+ASSETS = Path(__file__).parents[1] / "assets"
 # 4K design units, measured off Dota's own HUD so the six columns sit squarely
 # over the six ability slots and the panel reads as the HUD bar carried upwards.
 SIZE, PAD, EDGE, BEVEL = 92, 8, 4, 4

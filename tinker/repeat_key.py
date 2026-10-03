@@ -1,6 +1,6 @@
 """Repeat keys: while a registered key is held, keep sending its keydown (never a keyup) every REPEAT_INTERVAL.
 
-    TinkerRepeatKey(Path("tinker.yaml"), announce)  # the registered keys live in the file's repeat_keys list;
+    TinkerRepeatKey(TinkerConfig(), announce)       # the registered keys live in its repeat_keys list;
                                                     # announce("repeat", keys) after each toggle
 
 Ctrl + a key in REPEATABLE registers it, or unregisters it. A registered key's keydown starts the repeat, whatever
@@ -15,7 +15,7 @@ import time
 import keyboard
 from pynput import keyboard as pk
 
-from utils import key_name, read_yaml_list, toggle_yaml_list
+from utils.keyboard import key_name
 
 REPEATABLE = ["1", "z"]
 REPEAT_INTERVAL = 0.03
@@ -30,7 +30,7 @@ class TinkerRepeatKey:
     def __init__(self, config, announce):
         self.config = config
         self.announce = announce
-        self.keys = [key for key in read_yaml_list(config, "repeat_keys") if key in REPEATABLE]
+        self.keys = [key for key in config.read("repeat_keys") if key in REPEATABLE]
         self.repeating = None           # the registered key held down, while its repeat runs
         self.wake = threading.Event()
         pk.Listener(on_press=self.on_press, on_release=self.on_release).start()
@@ -44,7 +44,7 @@ class TinkerRepeatKey:
             return
         self.repeating = None                               # any other key down stops the repeat
         if name in REPEATABLE and keyboard.is_pressed("ctrl"):
-            self.keys = toggle_yaml_list(self.config, "repeat_keys", name)
+            self.keys = self.config.toggle("repeat_keys", name)
             self.announce("repeat", self.keys)
         elif name in self.keys:
             self.repeating = name

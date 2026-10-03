@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
-from window_utils import place_overlay
+from utils.window import place_overlay
 
 REFRESH_MS = 16
 CLICK_GAP = 0.01

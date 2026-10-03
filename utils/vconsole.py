@@ -7,7 +7,7 @@ Dota 2 opens the remote console on TCP 127.0.0.1:29000 in -tools mode only.
     with VConsoleClient() as vc:
         vc.run_lua("GetGroundHeight(Vector(0, 0, 0), nil)")  # "128"
 
-    python vconsole_client.py getpos                 # run one console command, print its output
+    python utils/vconsole.py getpos                  # run one console command, print its output
 
 Wire format: 12-byte big-endian header (4s type, u16 version, u32 length incl. header,
 u16 handle) then body. We send CMND (body = command + NUL) and read PRNT (text is a
@@ -113,7 +113,7 @@ class VConsoleClient:
 
 
 if __name__ == "__main__":
-    # python vconsole_client.py getpos  -> runs the command and prints its output
+    # python utils/vconsole.py getpos  -> runs the command and prints its output
     import sys
 
     with VConsoleClient() as vc:

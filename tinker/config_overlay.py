@@ -2,7 +2,7 @@
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont, QFontMetricsF
 
-from window_utils import LogicalWindow
+from utils.window import LogicalWindow
 
 WIDTH, HEIGHT = 2400, 72        # logical (4K) pixels
 BOTTOM = 700                    # logical pixels from the HUD's bottom edge to the line's

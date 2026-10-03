@@ -8,11 +8,11 @@ from fastapi import FastAPI, Request
 from pynput.keyboard import Controller, Key
 from PySide6.QtWidgets import QApplication
 
-import invoker_hub_overlay
-import invoker_icewall_steering
-import invoker_tornado_overlay
-import utils
-from utils import updated_abilities
+from invoker.hub_overlay import InvokerHubOverlay
+from invoker.icewall_steering import IcewallSteering
+from invoker.tornado_overlay import FOLLOW_UPS, InvokerTornadoOverlay
+from utils.dedup_queue import DedupeQueue
+from utils.memory import MemoryReader
 
 WAIT_INVOKE_TIMEOUT = 0.2
 SLOT_KEYS = {"ability3": "c", "ability4": "v"}   # invoked slot -> cast key
@@ -50,18 +50,34 @@ CAST_IMEDIATELY = set(INVOKE_RECIPES) - {"invoker_ice_wall", "invoker_sun_strike
 
 invoked = {}                       # spell -> cast key, updated by GSI
 ability_levels = {}                # ability name -> level, updated by GSI
-hero_position = utils.HeroPosition()   # from GSI's minimap block; yaw 0 = +x, 90 = +y
 tornado_cast_state = None          # (release time, hero x, hero y) of the last Tornado cast
 ready_at = {}                      # spell -> monotonic time it comes off cooldown
 cooldown_totals = {}               # duration observed at the start of each cooldown
 state_lock = threading.Lock()
-event_queue = utils.DedupeQueue()  # trigger events awaiting the worker
+event_queue = DedupeQueue()        # trigger events awaiting the worker
 controller = Controller()          # not keyboard.send, which stops keyboard's hooks for every key while sending
+memory = None                      # MemoryReader of the running Dota, created at start
 hub_overlay = None                 # created on the Qt (main) thread
 icewall_steering = None
 tornado_overlay = None
 
 app = FastAPI()
+
+
+def updated_abilities(curr_abilities, prev_abilities, filter_info):
+    """Current info of the abilities whose `filter_info` field changed this tick.
+
+    GSI's `previously.abilities` lists only the fields that changed, so a slot
+    appearing there with `filter_info` in it is one that just ticked. The value
+    returned is the *current* info for that slot, keyed by slot.
+    """
+    if not isinstance(prev_abilities, dict):    # GSI sends `false` when the block is new
+        return {}
+    return {
+        prev_ability_slot: curr_abilities[prev_ability_slot]
+        for prev_ability_slot, prev_ability_info in prev_abilities.items()
+        if filter_info in prev_ability_info
+    }
 
 
 def track_cooldown(abilities, prev_abilities):
@@ -111,14 +127,13 @@ def tornado_overlay_state():
             "cast": tornado_cast_state,
             "quas_level": ability_levels.get("invoker_quas", 0),
             "wex_level": ability_levels.get("invoker_wex", 0),
-            "ready": {spell: now >= ready_at.get(spell, 0) for spell in invoker_tornado_overlay.FOLLOW_UPS},
+            "ready": {spell: now >= ready_at.get(spell, 0) for spell in FOLLOW_UPS},
         }
 
 
 @app.post("/")
 async def gsi(request: Request):
     global invoked, ability_levels
-    now = time.monotonic()
     payload = await request.json()
     abilities = payload.get("abilities", {})
     prev_abilities = payload.get("previously", {}).get("abilities", {})
@@ -126,9 +141,6 @@ async def gsi(request: Request):
         invoked = {abilities[slot]["name"]: cast_key for slot, cast_key in SLOT_KEYS.items() if slot in abilities}
         ability_levels = {ability["name"]: ability["level"] for ability in abilities.values() if "name" in ability}
         track_cooldown(abilities, prev_abilities)
-    for unit in (payload.get("minimap") or {}).values():
-        if isinstance(unit, dict) and unit.get("image") == "minimap_herocircle_self":
-            hero_position.update(now, unit["xpos"], unit["ypos"], unit["yaw"])
     return {}
 
 
@@ -171,7 +183,7 @@ def run(spell, event_type):
 
     # Tornado is cast on release; remember when and from where for the combo ring
     now = time.monotonic()
-    if (spell == "invoker_tornado" and event_type == KEY_UP and spell in invoked and now >= ready_at.get(spell, 0) and (hero := hero_position.get())):
+    if (spell == "invoker_tornado" and event_type == KEY_UP and spell in invoked and now >= ready_at.get(spell, 0) and (hero := memory.get_hero_position())):
         tornado_cast_state = (now, *hero[:2])
 
     cast_spell(spell, event_type)
@@ -187,11 +199,11 @@ if __name__ == "__main__":
     # they exist before any key hook or GSI post can reach them.
     qt = QApplication([])
     qt.setQuitOnLastWindowClosed(False)
-    camera = utils.Camera()        # one F10 poller, shared by the overlays that need the camera
-    hub_overlay = invoker_hub_overlay.InvokerHubOverlay(
+    memory = MemoryReader()    # one reader of Dota's memory, shared by everything that needs it
+    hub_overlay = InvokerHubOverlay(
         hub_overlay_state, {key: spell for key, spell in AUTOKEY.items() if spell not in ALT_CAST})
-    icewall_steering = invoker_icewall_steering.IcewallSteering(STEER_KEYS, hero_position, camera)
-    tornado_overlay = invoker_tornado_overlay.InvokerTornadoOverlay(tornado_overlay_state, camera)
+    icewall_steering = IcewallSteering(STEER_KEYS, memory)
+    tornado_overlay = InvokerTornadoOverlay(tornado_overlay_state, memory)
 
     for key, spell in AUTOKEY.items():
         keyboard.hook_key(

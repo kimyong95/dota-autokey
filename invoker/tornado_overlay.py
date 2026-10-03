@@ -4,7 +4,7 @@ After Tornado is cast, each follow-up's arc fills up until the moment to cast it
 exactly when the lifted enemy drops: Sun Strike on top, EMP bottom-left, Chaos Meteor bottom-right.
 A full arc lights up (cast it now); the arc of a spell on cooldown is dimmed. The enemy is taken to
 be under the cursor, so its distance from where Invoker cast Tornado, and with it the Tornado travel
-time, follows the cursor (converted to the world by utils.CameraScreenProjection).
+time, follows the cursor (converted to the world by CameraScreenProjection).
 
 Timing, with the values of Valve's hero datafeed: Tornado leaves CAST_POINT after the release, flies
 at TORNADO_SPEED, lifts what it touches (TORNADO_RADIUS) for LIFT_DURATION[Quas level]; a follow-up
@@ -16,8 +16,8 @@ import win32api
 from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
-import utils
-from window_utils import dota_is_foreground, hud_surface, place_overlay
+from utils.camera import CameraScreenProjection
+from utils.window import dota_is_foreground, hud_surface, place_overlay
 
 CAST_POINT = 0.05
 TORNADO_SPEED, TORNADO_RADIUS = 1000, 200
@@ -56,17 +56,17 @@ class InvokerTornadoOverlay(QWidget):
 
     get_state() -> {"cast": (release time, hero x, hero y) of the last Tornado, or None,
                     "quas_level": int, "wex_level": int, "ready": {spell: off cooldown}}
-    camera: utils.Camera
+    memory: utils.memory.MemoryReader
     """
 
-    def __init__(self, get_state, camera):
+    def __init__(self, get_state, memory):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
                             | Qt.Tool | Qt.WindowTransparentForInput)
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.get_state = get_state
-        self.camera = camera
+        self.memory = memory
         self.bounds = None
         self.projection = None
         self.progress = {}      # spell -> 0..1, empty while no Tornado combo is running
@@ -78,20 +78,21 @@ class InvokerTornadoOverlay(QWidget):
         timer.start(REFRESH_MS)
 
     def refresh(self):
-        state, camera, now = self.get_state(), self.camera.position, time.monotonic()
+        state, now = self.get_state(), time.monotonic()
         if not dota_is_foreground() or not state["cast"] or now - state["cast"][0] > SHOW_SECONDS:
             self.progress = {}
             self.hide()
             return
+        matrix = self.memory.get_view_matrix()
         bounds = hud_surface()[0]
         if bounds != self.bounds:
-            self.bounds, self.projection = bounds, utils.CameraScreenProjection(bounds)
+            self.bounds, self.projection = bounds, CameraScreenProjection(bounds)
         cursor = win32api.GetCursorPos()
         self.ready = state["ready"]
         self.progress = {}
-        if camera:
+        if matrix is not None:
             cast_time, hx, hy = state["cast"]
-            x, y, _ = self.projection.screen_to_world(camera, cursor)
+            x, y, _ = self.projection.screen_to_world(matrix, cursor)
             self.progress = follow_up_progress(cast_time, math.hypot(x - hx, y - hy), state["quas_level"],
                                                state["wex_level"], now)
         left = cursor[0] + CURSOR_CENTER[0] - RING_SIZE // 2

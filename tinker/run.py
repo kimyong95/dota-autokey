@@ -1,18 +1,18 @@
 import signal
 import threading
 import keyboard
-from pathlib import Path
 from pynput import keyboard as pk
 import time
 from PySide6.QtWidgets import QApplication
-from info_overlay import InfoOverlay
-from tinker_ability_monitor import TinkerAbilityMonitor
-from tinker_repeat_key import REPEATABLE, TinkerRepeatKey
-from utils import key_name, read_yaml_list, toggle_yaml_list
+from tinker.ability_monitor import TinkerAbilityMonitor
+from tinker.config import TinkerConfig
+from tinker.config_overlay import InfoOverlay
+from tinker.repeat_key import REPEATABLE, TinkerRepeatKey
+from utils.keyboard import key_name
 
 LOOP_INTERVAL = 0.03
-CONFIG = Path(__file__).with_name("tinker.yaml")    # combo, extra_keys, and TinkerRepeatKey's repeat_keys
 
+config = TinkerConfig()             # config.yaml: combo, extra_keys, and TinkerRepeatKey's repeat_keys
 controller = pk.Controller()
 
 KEY_BINDING = {
@@ -65,10 +65,10 @@ def on_press(key, injected):
         return
     name = key_name(key)
     if keyboard.is_pressed("alt") and name in KEY_BINDING.values():
-        combo = toggle_yaml_list(CONFIG, "combo", name)
+        combo = config.toggle("combo", name)
         announce("combo", [KEY_BINDING[a] for a in COMBO_ORDER if KEY_BINDING[a] in combo])
     elif keyboard.is_pressed("alt") and name in EXTRA_KEY_CHOICES:
-        extra_keys = toggle_yaml_list(CONFIG, "extra_keys", name)
+        extra_keys = config.toggle("extra_keys", name)
         announce("extra", extra_keys)
     elif held.is_set() and name != AUTOKEY:
         suppress_rearm = True         # a key of the user's own while the autokey runs, not its auto-repeat
@@ -92,10 +92,10 @@ if __name__ == "__main__":
     qt = QApplication([])           # first: the overlay needs it, and it makes the process DPI aware
     qt.setQuitOnLastWindowClosed(False)
     info = InfoOverlay()
-    combo = [key for key in read_yaml_list(CONFIG, "combo") if key in KEY_BINDING.values()]
-    extra_keys = [key for key in read_yaml_list(CONFIG, "extra_keys") if key in EXTRA_KEY_CHOICES]
+    combo = [key for key in config.read("combo") if key in KEY_BINDING.values()]
+    extra_keys = [key for key in config.read("extra_keys") if key in EXTRA_KEY_CHOICES]
     monitor = TinkerAbilityMonitor()
-    repeat_key = TinkerRepeatKey(CONFIG, announce)
+    repeat_key = TinkerRepeatKey(config, announce)
     keyboard.hook_key(AUTOKEY, on_trigger, suppress=True)
     threading.Thread(target=worker, daemon=True).start()
     listener = pk.Listener(on_press=on_press)

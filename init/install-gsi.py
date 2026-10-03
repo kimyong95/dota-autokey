@@ -1,33 +1,20 @@
 """Copy the contents of dota_configs/ into Dota 2's config directory.
 
 Usage:
-    python install_configs.py
-    python install_configs.py --dry-run
+    PYTHONPATH=. python init/install-gsi.py
+    PYTHONPATH=. python init/install-gsi.py --dry-run
 """
 
 import argparse
 import shutil
-import string
 import sys
 from pathlib import Path
 
-CONFIG_SRC_DIR = Path(__file__).resolve().parent / "dota_configs"
+from utils.gsi import find_dota
+
+CONFIG_SRC_DIR = Path(__file__).resolve().parents[1] / "dota_configs"
 CONFIG_DST_DIR = Path("game") / "dota" / "cfg"
-LAUNCH_OPTIONS = "-gamestateintegration -condebug -console"
-
-MAX_DEPTH = 5
-# "steamapps/common/dota 2 beta" is 3 levels, so it can sit under 0..2 wildcard levels.
-PATTERNS = ["*/" * d + "steamapps/common/dota 2 beta" for d in range(MAX_DEPTH)]
-
-
-def drives() -> list[Path]:
-    return [Path(f"{d}:\\") for d in string.ascii_uppercase if Path(f"{d}:\\").is_dir()]
-
-def find_dota() -> Path | None:
-    """Search every drive for a "steamapps/common/dota 2 beta" folder."""
-    # glob is case-insensitive on Windows and skips directories it cannot read.
-    hits = (hit for drive in drives() for pat in PATTERNS for hit in drive.glob(pat))
-    return next(hits, None)
+LAUNCH_OPTIONS = "-gamestateintegration"
 
 
 def main() -> int:

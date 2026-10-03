@@ -33,7 +33,7 @@ import win32gui
 import win32ui
 from PIL import Image
 
-from window_utils import LogicalScreen, dota_is_foreground, hud_surface
+from utils.window import LogicalScreen, dota_is_foreground, hud_surface
 
 CAPTURE_KEY = "f16"
 ACTIVE_SECONDS = 0.5
@@ -41,7 +41,7 @@ ABILITIES = ["tinker_laser", "tinker_march_of_the_machines", "tinker_deploy_turr
              "tinker_warp_grenade", "tinker_keen_teleport", "tinker_rearm"]              # Q W E D SPACE F
 ALL_CASTABLE = {ability: "castable" for ability in ABILITIES}
 ICON_LEFT, ICON_TOP, ICON_SIZE, ICON_STEP = 1561, 1894, 96, 116     # logical (4K) pixels, off Dota's HUD
-ASSETS = Path(__file__).parent / "assets"
+ASSETS = Path(__file__).parents[1] / "assets"
 
 
 @contextmanager
