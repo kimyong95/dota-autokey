@@ -9,7 +9,7 @@ from utils.window import hud_surface, place_overlay
 
 WALL_DISTANCE, WALL_LENGTH = 200, 1200
 SAMPLE_STEP = 50
-SHOW_SECONDS, FADE_SECONDS = 0.5, 0.5
+SHOW_SECONDS, FADE_SECONDS = 3, 1
 REFRESH_MS = 16
 
 

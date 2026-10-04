@@ -18,7 +18,6 @@ from utils.window import place_overlay
 
 REFRESH_MS = 16
 CLICK_GAP = 0.01
-MOUSE_INPUT_TAG = 0x1CE0A11     # dwExtraInfo of our own mouse input, which the hook lets through
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 magnification = ctypes.WinDLL("Magnification")     # MagShowSystemCursor hides any cursor, Dota's own too
@@ -61,6 +60,8 @@ class VirtualCursorOverlay(QWidget):
         self.position = (0, 0)
         self.look = None
         self.bounds = (0, 0, 0, 0)
+        from humanmouse import HumanMouseController     # not at the top: pyautogui's import sets the process DPI awareness before Qt can
+        self.human_mouse_controller = HumanMouseController(speed_factor=100)
         self.capture_requested.connect(self._capture, Qt.BlockingQueuedConnection)
         self.release_requested.connect(self._release, Qt.QueuedConnection)
         threading.Thread(target=self._hook, daemon=True).start()
@@ -117,24 +118,19 @@ class VirtualCursorOverlay(QWidget):
         win32gui.DeleteObject(colour)
         return info["bmWidth"], info["bmHeight"], pixels, (hot_x, hot_y)
 
-    @staticmethod
-    def move_system_cursor(x, y):
-        left, top = win32api.GetSystemMetrics(win32con.SM_XVIRTUALSCREEN), win32api.GetSystemMetrics(win32con.SM_YVIRTUALSCREEN)
-        width, height = win32api.GetSystemMetrics(win32con.SM_CXVIRTUALSCREEN), win32api.GetSystemMetrics(win32con.SM_CYVIRTUALSCREEN)
-        VirtualCursorOverlay.send_mouse_input(win32con.MOUSEEVENTF_MOVE | win32con.MOUSEEVENTF_ABSOLUTE | win32con.MOUSEEVENTF_VIRTUALDESK,
-                                              round((x - left) * 65535 / (width - 1)), round((y - top) * 65535 / (height - 1)))
+    def move_system_cursor(self, x, y):
+        self.human_mouse_controller.move_to((x, y))     # glides from where the system cursor is
 
-    @staticmethod
-    def right_click(x, y):
-        VirtualCursorOverlay.move_system_cursor(x, y)
+    def right_click(self, x, y):
+        self.move_system_cursor(x, y)
         time.sleep(CLICK_GAP)
         VirtualCursorOverlay.send_mouse_input(win32con.MOUSEEVENTF_RIGHTDOWN)
         time.sleep(CLICK_GAP)
         VirtualCursorOverlay.send_mouse_input(win32con.MOUSEEVENTF_RIGHTUP)
 
     @staticmethod
-    def send_mouse_input(flags, dx=0, dy=0):
-        event = INPUT(type=0, mi=MOUSEINPUT(dx, dy, 0, flags, 0, MOUSE_INPUT_TAG))
+    def send_mouse_input(flags):
+        event = INPUT(type=0, mi=MOUSEINPUT(0, 0, 0, flags, 0, 0))
         if user32.SendInput(1, ctypes.byref(event), ctypes.sizeof(INPUT)) != 1:
             raise ctypes.WinError(ctypes.get_last_error())
 
@@ -146,7 +142,7 @@ class VirtualCursorOverlay(QWidget):
         def swallow(code, wparam, lparam):
             if code >= 0 and self.active:
                 event = ctypes.cast(lparam, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                if event.dwExtraInfo != MOUSE_INPUT_TAG:
+                if not event.flags & win32con.LLMHF_INJECTED:     # the user's; programs' input, ours too, passes
                     if wparam == win32con.WM_MOUSEMOVE:
                         x, y = win32api.GetCursorPos()     # the hook runs before the system cursor moves
                         self.position = self._clamp(self.position[0] + event.pt.x - x, self.position[1] + event.pt.y - y)
