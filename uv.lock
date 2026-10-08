@@ -88,7 +88,6 @@ dependencies = [
     { name = "pynput" },
     { name = "pyside6" },
     { name = "pywin32" },
-    { name = "pyyaml" },
     { name = "tqdm" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -104,7 +103,6 @@ requires-dist = [
     { name = "pynput" },
     { name = "pyside6", specifier = ">=6.11.2" },
     { name = "pywin32", specifier = ">=312" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "tqdm", specifier = ">=4.70.1" },
     { name = "uvicorn", extras = ["standard"] },
 ]

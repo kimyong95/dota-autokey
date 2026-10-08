@@ -6,7 +6,7 @@
 
 While active, its own thread grabs the six ability icons every frame (a GDI copy waits for the next composed
 frame: ~16.7 ms at 60 Hz). ACTIVE_SECONDS after the last activate() it stops, and every state is castable again.
-CAPTURE_KEY, in Dota with all six abilities castable, saves each ability icon on screen as its reference,
+Ctrl + CAPTURE_KEY, in Dota with all six abilities castable, saves each ability icon on screen as its reference,
 assets/<ability>.png.
 
 Each icon and its reference are shrunk to 32x32 and compared:
@@ -35,7 +35,7 @@ from PIL import Image
 
 from utils.window import LogicalScreen, dota_is_foreground, hud_surface
 
-CAPTURE_KEY = "f16"
+CAPTURE_KEY = "f6"                  # Dota's screenshot key (bind "F6" "jpeg"); held with Ctrl
 ACTIVE_SECONDS = 0.5
 ABILITIES = ["tinker_laser", "tinker_march_of_the_machines", "tinker_deploy_turrets",     # HUD slot order:
              "tinker_warp_grenade", "tinker_keen_teleport", "tinker_rearm"]              # Q W E D SPACE F
@@ -109,14 +109,16 @@ class TinkerAbilityMonitor:
         self.woken = threading.Event()
         self.references = load_references()
         if self.references is None:
-            print(f"No ability references yet: press {CAPTURE_KEY} in Dota while all abilities are castable.")
+            print(f"No ability references yet: press Ctrl + {CAPTURE_KEY.upper()} in Dota while all abilities are castable.")
         keyboard.on_press_key(CAPTURE_KEY, self.capture)
         threading.Thread(target=self.run, daemon=True).start()
 
     def capture(self, event):
-        """Save each ability icon on screen now as its castable reference."""
+        """On Ctrl + CAPTURE_KEY, save each ability icon on screen now as its castable reference."""
+        if not keyboard.is_pressed("ctrl"):     # a plain screenshot
+            return
         if not dota_is_foreground():        # would save whatever covers the HUD
-            return print(f"{CAPTURE_KEY} ignored: Dota is not the foreground window.")
+            return print(f"Ctrl + {CAPTURE_KEY.upper()} ignored: Dota is not the foreground window.")
         row, spans = ability_row()
         with screen_grabber(*row) as grab:
             row_image = grab()
