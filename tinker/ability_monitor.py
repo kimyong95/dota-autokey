@@ -1,22 +1,29 @@
-"""Tinker's ability states read off the screen, not GSI: castable, casting, or unavailable (cooldown / no mana).
+"""Tinker's ability states read off the screen, not GSI: available, casting, cooldown or no mana.
 
     monitor = TinkerAbilityMonitor()
-    monitor.activate()  # watch the icons for the next ACTIVE_SECONDS; call again to keep watching
-    monitor.states      # {ability: state} of the latest frame while active; all "castable" otherwise
+    monitor.activate()                      # watch the icons for the next ACTIVE_SECONDS; call again to keep watching
+    state = monitor.states["tinker_laser"]  # its AbilityState, updated every frame while active
+    state.castable                          # available, or not known (None)
+    state.on_casting = f                    # f() when any other state, None too, turns casting: the cast point began
+    state.on_casted = f                     # f() when casting turns into cooldown: the cast went off
+    state.on_available = f                  # f() when any other state, None too, turns available
 
 While active, its own thread grabs the six ability icons every frame (a GDI copy waits for the next composed
-frame: ~16.7 ms at 60 Hz). ACTIVE_SECONDS after the last activate() it stops, and every state is castable again.
-Ctrl + CAPTURE_KEY, in Dota with all six abilities castable, saves each ability icon on screen as its reference,
-assets/<ability>.png.
+frame: ~16.7 ms at 60 Hz). ACTIVE_SECONDS after the last activate() it stops and resets every state to None, so
+every ability counts as castable until it watches again. Ctrl + CAPTURE_KEY, in Dota with all six abilities
+castable, saves each ability icon on screen as its reference, assets/<ability>.png.
 
 Each icon and its reference are shrunk to 32x32 and compared:
   casting      its share of green pixels (G - B above 25) is over 3 points above the reference's. Dota sweeps a
                green wash over the icon during the cast point; cooldown greys it and no mana turns it blue, which
                only lower that share.
-  castable     otherwise, if the RMS difference is below 35.
-  unavailable  otherwise: cooldown greys and darkens the icon, no mana washes it dark blue.
-On 4K, 1080p and 900p screenshots: castable RMS ~1 at the references' resolution and <= 22 at another,
-unavailable >= 45; casting raises the green share >= 13 points, the other states <= 0.4.
+  available    otherwise, if the RMS difference is below 35.
+  no_mana      otherwise, if over 40 % of its pixels are blue (B - R above 20): no mana washes the icon blue. A
+               cooldown without the mana for the next cast looks the same, with its countdown on top.
+  cooldown     otherwise: cooldown greys and darkens the icon.
+On 4K, 1080p and 900p screenshots: available RMS ~1 at the references' resolution and <= 22 at another, the
+others >= 45; casting raises the green share >= 13 points, the other states <= 0.4. On one 4K screenshot each,
+the blue share is <= 0.19 on cooldown and >= 0.63 without mana (0.63: Warp Flare on cooldown without mana).
 
 Assumes the borderless window's HUD with six abilities (Tinker with Aghanim's Shard).
 """
@@ -39,7 +46,6 @@ CAPTURE_KEY = "f6"                  # Dota's screenshot key (bind "F6" "jpeg"); 
 ACTIVE_SECONDS = 0.5
 ABILITIES = ["tinker_laser", "tinker_march_of_the_machines", "tinker_deploy_turrets",     # HUD slot order:
              "tinker_warp_grenade", "tinker_keen_teleport", "tinker_rearm"]              # Q W E D SPACE F
-ALL_CASTABLE = {ability: "castable" for ability in ABILITIES}
 ICON_LEFT, ICON_TOP, ICON_SIZE, ICON_STEP = 1561, 1894, 96, 116     # logical (4K) pixels, off Dota's HUD
 ASSETS = Path(__file__).parents[1] / "assets"
 
@@ -86,16 +92,52 @@ def classify(icon, ref):
     green_share = lambda image: (image[..., 1] - image[..., 2] > 25).mean()
     green_rise = green_share(icon) - green_share(ref)
     difference = np.sqrt(((icon - ref) ** 2).mean())
+    blue_share = (icon[..., 2] - icon[..., 0] > 20).mean()
     if green_rise > 0.03:
         return "casting"
-    if difference < 35:
-        return "castable"
-    return "unavailable"
+    elif difference < 35:
+        return "available"
+    elif blue_share > 0.4:
+        return "no_mana"
+    else:
+        return "cooldown"
 
 
 def load_references():
     paths = [ASSETS / f"{ability}.png" for ability in ABILITIES]
     return [small(Image.open(path)) for path in paths] if all(path.exists() for path in paths) else None
+
+
+class AbilityState:
+    """One ability's state off its icon: "available", "casting", "cooldown" or "no_mana"; None while not known.
+
+    Set the callbacks to be told of a change; they run on the monitor's thread, so they should return quickly.
+    """
+
+    def __init__(self):
+        self.state = None
+        self.on_casting = None          # f(): any other state, None too, turned casting
+        self.on_casted = None           # f(): casting turned into cooldown
+        self.on_available = None        # f(): any other state, None too, turned available
+
+    @property
+    def castable(self):
+        """Available, or not known (None): castable as far as anyone can tell."""
+        return self.state in (None, "available")
+
+    def update(self, state):
+        """The state in the latest frame; calls a callback if it changed into one."""
+        previous, self.state = self.state, state
+        if previous != "casting" and state == "casting" and self.on_casting:
+            self.on_casting()
+        if previous == "casting" and state == "cooldown" and self.on_casted:
+            self.on_casted()
+        if previous != "available" and state == "available" and self.on_available:
+            self.on_available()
+
+    def reset(self):
+        """Not known any more (None), as before the first look: the monitor stopped watching."""
+        self.state = None
 
 
 class TinkerAbilityMonitor:
@@ -104,7 +146,7 @@ class TinkerAbilityMonitor:
     def __init__(self):
         ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))   # physical pixels; Qt sets it already
         ASSETS.mkdir(exist_ok=True)
-        self.states = ALL_CASTABLE
+        self.states = {ability: AbilityState() for ability in ABILITIES}
         self.active_until = 0.0
         self.woken = threading.Event()
         self.references = load_references()
@@ -141,6 +183,7 @@ class TinkerAbilityMonitor:
             row, spans = ability_row()
             with screen_grabber(*row) as grab:
                 while time.monotonic() < self.active_until:
-                    self.states = {ability: classify(small(icon), ref)
-                                   for ability, icon, ref in zip(ABILITIES, icons(grab(), spans), self.references)}
-            self.states = ALL_CASTABLE
+                    for ability, icon, ref in zip(ABILITIES, icons(grab(), spans), self.references):
+                        self.states[ability].update(classify(small(icon), ref))
+            for state in self.states.values():
+                state.reset()

@@ -9,6 +9,7 @@ MemoryReader uses Offsets and Process, which know nothing of each other. The app
     memory = MemoryReader()         # hooks the running Dota; ProcessLookupError if it is not running
     memory.get_view_matrix()        # 4 x 4 array (clip = matrix @ (x, y, z, 1)), or None before the first frame
     memory.get_hero_position()      # (x, y, z, yaw), or None while there is no hero: main menu, hero pick
+    memory.get_hover_position()     # (x, y, z) of the entity under the cursor, or None while there is none
 
 A MemoryReader lives inside one Dota session: once Dota exits, its reads raise ProcessLookupError.
 
@@ -60,6 +61,8 @@ class Offsets:
         # mov rdx, [local player controller]; test rdx, rdx; jz ...; mov edx, [rdx + m_hPawn]
         "local-controller": (0x48, 0x8B, 0x15, None, None, None, None,
                              0x48, 0x85, 0xD2, 0x74, None, 0x8B, 0x92, 0xA4, 0x06, 0x00, 0x00),
+        # mov edi, [hovered entity]; xor edx, edx; mov rcx, r13; call ... (a field of Dota's input object, CDOTAInput)
+        "hovered-entity": (0x8B, 0x3D, None, None, None, None, 0x33, 0xD2, 0x49, 0x8B, 0xCD, 0xE8),
     }
 
     # Friendly name -> schema name: "Class" for the class's size, "Class.field" for the offset of a field in the
@@ -254,6 +257,7 @@ class MemoryReader:
         memory = MemoryReader()                     # ProcessLookupError if Dota is not running
         memory.get_view_matrix()                    # 4 x 4 array, or None before Dota draws a frame
         memory.get_hero_position()                  # (x, y, z, yaw), or None while there is no hero
+        memory.get_hover_position()                 # (x, y, z) of the entity under the cursor, or None
         memory.read("controller-hero", controller)  # one variable of the object at an address
 
     Meant to live inside one Dota session: every read raises ProcessLookupError once Dota has exited. Holds nothing
@@ -261,11 +265,13 @@ class MemoryReader:
     """
 
     POINTER, HANDLE, VECTOR, ANGLES, MATRIX = "<Q", "<I", "<3f", "<3f", "<16f"    # what Dota's memory holds
+    NO_ENTITY = 0xFFFFFFFF          # a handle to no entity
 
     TYPE = {
         "view-matrix": MATRIX,              # world to clip space, row-major
         "entity-system": POINTER,
         "local-controller": POINTER,        # your player controller
+        "hovered-entity": HANDLE,           # the entity under the cursor; NO_ENTITY when there is none
         "entity-chunks": POINTER,           # one per chunk, to its entries
         "entry-entity": POINTER,
         "entry-designer-name": POINTER,     # to text
@@ -316,3 +322,15 @@ class MemoryReader:
         pos = self.read("node-position", node)
         yaw = self.read("node-rotation", node)[1]       # of pitch, yaw, roll
         return *pos, yaw % 360
+
+    def get_hover_position(self):
+        """(x, y, z) of the entity under the cursor, as Dota picks it, or None while there is none. 6 reads; 1 for none.
+
+        The entity's own world position, where it stands: not the point under the cursor.
+        """
+        handle = self.read("hovered-entity")
+        entry = handle != self.NO_ENTITY and self.entry(handle)
+        entity = entry and self.read("entry-entity", entry)
+        if not entity:
+            return None
+        return self.read("node-position", self.read("entity-scene-node", entity))
