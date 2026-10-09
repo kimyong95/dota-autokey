@@ -39,7 +39,7 @@ CAST_RANGE_BONUS = {"item_aether_lens": (225,), "item_enhancement_keen_eyed": (1
 CAST_RANGE_SLOTS = {*SLOT_KEYS, "neutral0", "neutral1"}     # GSI slots where they work: inventory and neutral, not the backpack
 WARP_FLARE_PUSH = 0.6               # Warp Flare's warp_distance_factor: the teleport is this share of the cast range at no distance, down to 0 at max range
 WARP_FLARE_SPEED = 1900             # Warp Flare's projectile speed, world units per second
-LANDING_GRACE = 0.5                 # v stays valid this many seconds past t, the flare's estimated landing
+LANDING_GRACE = 1.0                 # v stays valid this many seconds past t, the flare's estimated landing
 TURRET_BEYOND = 30                  # Deploy Turrets aims this far past v, on the line from your hero through v
 
 
