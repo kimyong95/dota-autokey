@@ -1,7 +1,7 @@
 """Repeat keys: while one of `keys` is held, keep sending its keydown (never a keyup) every REPEAT_INTERVAL.
 
     repeat_key = TinkerRepeatKey()
-    repeat_key.keys = ["1", "z"]        # the keys to repeat; set them from any thread, any time
+    repeat_key.keys = {"1", "z"}        # the keys to repeat; set them from any thread, any time
 
 A key's keydown starts the repeat, whatever modifiers are held: Alt + 1 repeats 1, and Dota sees Alt + 1 each
 time. Any other key event stops it: the key's release, or another key going down or up. Modifier events do not,
@@ -25,7 +25,7 @@ class TinkerRepeatKey:
     """Create once; `keys` are the keys to repeat, none at first."""
 
     def __init__(self):
-        self.keys = []
+        self.keys = set()
         self.repeating = None           # the key of `keys` held down, while its repeat runs
         self.wake = threading.Event()
         pk.Listener(on_press=self.on_press, on_release=self.on_release).start()

@@ -4,7 +4,7 @@
     monitor.activate()                      # watch the icons for the next ACTIVE_SECONDS; call again to keep watching
     state = monitor.states["tinker_laser"]  # its AbilityState, updated every frame while active
     state.castable                          # available, or not known (None)
-    state.on_casting = f                    # f() when any other state, None too, turns casting: the cast point began
+    state.on_casting = f                    # f() on every frame it is casting: through the cast point
     state.on_casted = f                     # f() when casting turns into cooldown: the cast went off
     state.on_available = f                  # f() when any other state, None too, turns available
 
@@ -111,12 +111,13 @@ def load_references():
 class AbilityState:
     """One ability's state off its icon: "available", "casting", "cooldown" or "no_mana"; None while not known.
 
-    Set the callbacks to be told of a change; they run on the monitor's thread, so they should return quickly.
+    Set the callbacks to be told of a state or a change; they run on the monitor's thread, so they should return
+    quickly: on_casting runs every frame while casting.
     """
 
     def __init__(self):
         self.state = None
-        self.on_casting = None          # f(): any other state, None too, turned casting
+        self.on_casting = None          # f(): this frame it is casting
         self.on_casted = None           # f(): casting turned into cooldown
         self.on_available = None        # f(): any other state, None too, turned available
 
@@ -126,9 +127,9 @@ class AbilityState:
         return self.state in (None, "available")
 
     def update(self, state):
-        """The state in the latest frame; calls a callback if it changed into one."""
+        """The state in the latest frame; calls the callbacks it calls for."""
         previous, self.state = self.state, state
-        if previous != "casting" and state == "casting" and self.on_casting:
+        if state == "casting" and self.on_casting:
             self.on_casting()
         if previous == "casting" and state == "cooldown" and self.on_casted:
             self.on_casted()

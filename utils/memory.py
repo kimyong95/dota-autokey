@@ -9,7 +9,7 @@ MemoryReader uses Offsets and Process, which know nothing of each other. The app
     memory = MemoryReader()         # hooks the running Dota; ProcessLookupError if it is not running
     memory.get_view_matrix()        # 4 x 4 array (clip = matrix @ (x, y, z, 1)), or None before the first frame
     memory.get_hero_position()      # (x, y, z, yaw), or None while there is no hero: main menu, hero pick
-    memory.get_hover_position()     # (x, y, z) of the entity under the cursor, or None while there is none
+    memory.get_hover_enemy_hero_position()  # (x, y, z) of the enemy hero under the cursor, or None while there is none
 
 A MemoryReader lives inside one Dota session: once Dota exits, its reads raise ProcessLookupError.
 
@@ -72,6 +72,7 @@ class Offsets:
         "entry-designer-name": "CEntityIdentity.m_designerName",        # e.g. "npc_dota_hero_tinker"
         "controller-hero": "C_DOTAPlayerController.m_hAssignedHero",    # your hero, as a handle
         "entity-scene-node": "C_BaseEntity.m_pGameSceneNode",           # where an entity is
+        "entity-team": "C_BaseEntity.m_iTeamNum",                       # 2 Radiant, 3 Dire, 4 neutral
         "node-position": "CGameSceneNode.m_vecAbsOrigin",               # world x, y, z
         "node-rotation": "CGameSceneNode.m_angAbsRotation",             # world pitch, yaw, roll, in degrees
     }
@@ -257,14 +258,14 @@ class MemoryReader:
         memory = MemoryReader()                     # ProcessLookupError if Dota is not running
         memory.get_view_matrix()                    # 4 x 4 array, or None before Dota draws a frame
         memory.get_hero_position()                  # (x, y, z, yaw), or None while there is no hero
-        memory.get_hover_position()                 # (x, y, z) of the entity under the cursor, or None
+        memory.get_hover_enemy_hero_position()      # (x, y, z) of the enemy hero under the cursor, or None
         memory.read("controller-hero", controller)  # one variable of the object at an address
 
     Meant to live inside one Dota session: every read raises ProcessLookupError once Dota has exited. Holds nothing
     that changes after creation, so threads can share one.
     """
 
-    POINTER, HANDLE, VECTOR, ANGLES, MATRIX = "<Q", "<I", "<3f", "<3f", "<16f"    # what Dota's memory holds
+    POINTER, HANDLE, TEAM, VECTOR, ANGLES, MATRIX = "<Q", "<I", "<B", "<3f", "<3f", "<16f"    # what Dota's memory holds
     NO_ENTITY = 0xFFFFFFFF          # a handle to no entity
 
     TYPE = {
@@ -277,6 +278,7 @@ class MemoryReader:
         "entry-designer-name": POINTER,     # to text
         "controller-hero": HANDLE,
         "entity-scene-node": POINTER,
+        "entity-team": TEAM,
         "node-position": VECTOR,            # world x, y, z
         "node-rotation": ANGLES,            # pitch, yaw, roll in degrees
     }
@@ -323,14 +325,21 @@ class MemoryReader:
         yaw = self.read("node-rotation", node)[1]       # of pitch, yaw, roll
         return *pos, yaw % 360
 
-    def get_hover_position(self):
-        """(x, y, z) of the entity under the cursor, as Dota picks it, or None while there is none. 6 reads; 1 for none.
+    def get_hover_enemy_hero_position(self):
+        """(x, y, z) of the enemy hero under the cursor, as Dota picks it, or None while there is none: nothing, not a
+        hero, or on your team. 11 reads; 1 for nothing under the cursor.
 
-        The entity's own world position, where it stands: not the point under the cursor.
+        The hero's own world position, where it stands: not the point under the cursor. A hero is an npc_dota_hero_
+        entity (the Hero Demo's target dummy is one), an enemy one on any team but your player controller's.
+        Illusions count: the game does not tell an enemy's apart either.
         """
         handle = self.read("hovered-entity")
         entry = handle != self.NO_ENTITY and self.entry(handle)
         entity = entry and self.read("entry-entity", entry)
-        if not entity:
+        name = entity and self.read("entry-designer-name", entry)
+        if not name or not self.process.text(name).startswith("npc_dota_hero_"):
+            return None
+        controller = self.read("local-controller")
+        if not controller or self.read("entity-team", entity) == self.read("entity-team", controller):
             return None
         return self.read("node-position", self.read("entity-scene-node", entity))
