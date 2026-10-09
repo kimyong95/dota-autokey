@@ -34,12 +34,12 @@ SLOT_KEYS = {"slot0": "1", "slot1": "2", "slot2": "3", "slot3": "z", "slot4": "x
 REPEAT_ITEMS = {"item_blink", "item_overwhelming_blink", "item_swift_blink", "item_arcane_blink","item_cyclone", "item_wind_waker"}
 EXTRA_ITEMS = {"item_sheepstick", "item_dagon", "item_dagon_2", "item_dagon_3", "item_dagon_4", "item_dagon_5", "item_ethereal_blade", "item_ghost", "item_soul_ring", "item_orchid", "item_bloodthorn"}         # pressed every loop
 assert not set(COMBO.values()) & set(SLOT_KEYS.values()), "combo and item keys overlap"
-CAST_RANGE = {"tinker_warp_grenade": 700, "tinker_deploy_turrets": 600}   # base (the game's scripts/npc/heroes/npc_dota_hero_tinker.txt)
+WARP_FLARE_BASE_CAST_RANGE = 700    # the game's scripts/npc/heroes/npc_dota_hero_tinker.txt
 CAST_RANGE_BONUS = {"item_aether_lens": (225,), "item_enhancement_keen_eyed": (125, 135, 145)}    # by item_level (the game's scripts/npc/items.txt)
 CAST_RANGE_SLOTS = {*SLOT_KEYS, "neutral0", "neutral1"}     # GSI slots where they work: inventory and neutral, not the backpack
 WARP_FLARE_PUSH = 0.6               # Warp Flare's warp_distance_factor: the teleport is this share of the cast range at no distance, down to 0 at max range
 WARP_FLARE_SPEED = 1900             # Warp Flare's projectile speed, world units per second
-LANDING_GRACE = 1.0                 # v stays valid this many seconds past t, the flare's estimated landing
+LANDING_GRACE = 1.0                 # cast_turrets aims at v until this many seconds past t, the flare's estimated landing
 TURRET_BEYOND = 30                  # Deploy Turrets aims this far past v, on the line from your hero through v
 
 
@@ -48,32 +48,19 @@ class WarpFlareCastState:
     available again (reset):
         u  the target's (x, y, z): the enemy hero last hovered while one of those was casting, or as Warp Flare went
            off; None if none was
-        v  (x, y) the target is teleported to, by warp_flare_landing from u as the flare went off; None before that,
-           without u, and LANDING_GRACE after it has landed (now past t + LANDING_GRACE)
+        v  (x, y) the target is teleported to, by warp_flare_landing from u as the flare went off; None before that
+           and without u
         t  time.monotonic() the flare is estimated to land: as it went off + its flight to u at WARP_FLARE_SPEED
     """
 
     def __init__(self):
-        self.u = None
-        self.landing = None         # (v, t) as the flare went off: one attribute, so no thread sees one without the other
-
-    @property
-    def v(self):
-        landing = self.landing
-        return landing[0] if landing and time.monotonic() <= landing[1] + LANDING_GRACE else None
-
-    @property
-    def t(self):
-        landing = self.landing
-        return landing and landing[1]
+        self.reset()
 
     def reset(self):
-        self.u, self.landing = None, None
+        self.u = self.v = self.t = None
 
-    def __repr__(self):
-        return f"WarpFlareCastState(u={self.u}, v={self.v}, t={self.t})"
 
-monitor = None                      # TinkerAbilityMonitor: the ability states off the screen
+monitor = None                     # TinkerAbilityMonitor: the ability states off the screen
 memory = None                       # MemoryReader of the running Dota
 projection = None                   # CameraScreenProjection of Dota's client area
 human_mouse = None                  # HumanMouseController: glides the real cursor like a hand would
@@ -81,8 +68,8 @@ repeat_key = None                   # TinkerRepeatKey: GSI sets its keys
 extra_keys = set()                  # slot keys of the EXTRA_ITEMS in the inventory, set by GSI
 held = threading.Event()            # AUTOKEY is down
 suppress_rearm = False
-cast_range = dict(CAST_RANGE)       # ability -> its cast range with the CAST_RANGE_BONUS items, set by GSI
-WARP_FLARE_CAST_STATE = WarpFlareCastState()   # set by the ability hooks, read by cast_turrets
+warp_flare_cast_range = WARP_FLARE_BASE_CAST_RANGE  # with the CAST_RANGE_BONUS items, set by GSI
+warp_flare_cast_state = WarpFlareCastState()   # set by the ability hooks, read by cast_turrets
 
 app = FastAPI()
 
@@ -122,28 +109,21 @@ def warp_flare_landing(x, u, cast_range):
 
 def hovered_target():
     """The hovered unit's position, else the target stored so far: the cursor may be off it for a moment."""
-    return memory.get_hover_enemy_hero_position() or WARP_FLARE_CAST_STATE.u
+    return memory.get_hover_enemy_hero_position() or warp_flare_cast_state.u
 
 
 def on_casting_before_turrets():
     """on_casting of the abilities before Deploy Turrets in COMBO: stores the hovered target as u."""
-    WARP_FLARE_CAST_STATE.u = hovered_target()
+    warp_flare_cast_state.u = hovered_target()
 
 
 def on_casted_warp_flare():
     """Stores the target as u, where the flare teleports it as v, and when it lands as t."""
-    state = WARP_FLARE_CAST_STATE
+    state = warp_flare_cast_state
     hero, state.u = memory.get_hero_position(), hovered_target()     # hero: (x, y, z, yaw)
     if hero and state.u:
-        landed = time.monotonic() + math.dist(hero[:2], state.u[:2]) / WARP_FLARE_SPEED
-        state.landing = (warp_flare_landing(hero, state.u, cast_range["tinker_warp_grenade"]), landed)
-    else:
-        state.landing = None
-    print(f"Warp Flare casted: {state}", flush=True)
-
-
-def on_available_warp_flare():
-    WARP_FLARE_CAST_STATE.reset()
+        state.v = warp_flare_landing(hero, state.u, warp_flare_cast_range)
+        state.t = time.monotonic() + math.dist(hero[:2], state.u[:2]) / WARP_FLARE_SPEED
 
 
 @contextmanager
@@ -166,11 +146,12 @@ def cursor_held_at(pixel):
 
 
 def cast_turrets():
-    """While a Warp Flare with a target is flying (v), and with everything to aim with, presses Deploy Turrets' key with
-    the real cursor held TURRET_BEYOND past where the flare puts the target, on the line from your hero now through v.
-    Otherwise only right-clicks where the cursor is: no cursor move, no cast key."""
+    """From a Warp Flare with a target (v) until LANDING_GRACE past its landing (t), and with everything to aim with,
+    presses Deploy Turrets' key with the real cursor held TURRET_BEYOND past where the flare puts the target, on the
+    line from your hero now through v. Otherwise only right-clicks where the cursor is: no cursor move, no cast key."""
+    v, t = warp_flare_cast_state.v, warp_flare_cast_state.t     # once: the hooks set them on the monitor's thread
     hero, matrix = memory.get_hero_position(), memory.get_view_matrix()      # hero: (x, y, z, yaw)
-    if (v := WARP_FLARE_CAST_STATE.v) and hero and matrix is not None:
+    if v and t and time.monotonic() <= t + LANDING_GRACE and hero and matrix is not None:
         dx, dy = v[0] - hero[0], v[1] - hero[1]
         distance = math.hypot(dx, dy) or 1          # on top of each other: aim at v itself
         aim = v[0] + dx / distance * TURRET_BEYOND, v[1] + dy / distance * TURRET_BEYOND
@@ -179,21 +160,18 @@ def cast_turrets():
     else:
         mouse.click(pm.Button.right)
 
-    print(WARP_FLARE_CAST_STATE)
-
 
 @app.post("/")
 async def gsi(request: Request):
-    global extra_keys, cast_range
+    global extra_keys, warp_flare_cast_range
     items = (await request.json()).get("items")
     if items:
         names = {key: items.get(slot, {}).get("name") for slot, key in SLOT_KEYS.items()}
-        repeat = {key for key, name in names.items() if name in REPEAT_ITEMS}
-        extra = {key for key, name in names.items() if name in EXTRA_ITEMS}
-        repeat_key.keys, extra_keys = repeat, extra
+        repeat_key.keys = {key for key, name in names.items() if name in REPEAT_ITEMS}
+        extra_keys = {key for key, name in names.items() if name in EXTRA_ITEMS}
         levels = {items.get(slot, {}).get("name"): items.get(slot, {}).get("item_level", 1) for slot in CAST_RANGE_SLOTS}  # a second copy adds nothing
-        bonus = sum(bonus[min(levels[name], len(bonus)) - 1] for name, bonus in CAST_RANGE_BONUS.items() if name in levels)
-        cast_range = {ability: base + bonus for ability, base in CAST_RANGE.items()}
+        bonus = sum(by_level[min(levels[name], len(by_level)) - 1] for name, by_level in CAST_RANGE_BONUS.items() if name in levels)
+        warp_flare_cast_range = WARP_FLARE_BASE_CAST_RANGE + bonus
     return {}
 
 
@@ -225,7 +203,7 @@ if __name__ == "__main__":
     for ability in list(COMBO)[:list(COMBO).index("tinker_deploy_turrets")]:      # cast at what the turrets aim past
         monitor.states[ability].on_casting = on_casting_before_turrets
     monitor.states["tinker_warp_grenade"].on_casted = on_casted_warp_flare
-    monitor.states["tinker_warp_grenade"].on_available = on_available_warp_flare
+    monitor.states["tinker_warp_grenade"].on_available = warp_flare_cast_state.reset
     repeat_key = TinkerRepeatKey()
     keyboard.hook_key(AUTOKEY, on_trigger, suppress=True)
     threading.Thread(target=worker, daemon=True).start()
