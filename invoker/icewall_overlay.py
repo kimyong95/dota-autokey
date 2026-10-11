@@ -61,8 +61,8 @@ class InvokerIcewallOverlay(QWidget):
         if hero is None or matrix is None:
             return
         x, y, _, yaw = hero
-        self.points = [QPointF(*self.projection.world_to_screen(matrix, p)) - self.origin
-                       for p in wall_points(x, y, yaw)]
+        pixels = [self.projection.project(matrix, p) for p in wall_points(x, y, yaw)]     # under the HUD too
+        self.points = [QPointF(*pixel) - self.origin for pixel in pixels if pixel]     # None behind the camera
         self.opacity = min(1.0, (SHOW_SECONDS + FADE_SECONDS - shown_for) / FADE_SECONDS)
         self.show()
         self.update()

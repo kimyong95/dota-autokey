@@ -8,7 +8,8 @@ class CameraScreenProjection:
 
         projection = CameraScreenProjection(viewport)
         x, y, z = projection.screen_to_world(matrix, (sx, sy))
-        sx, sy = projection.world_to_screen(matrix, (x, y))
+        sx, sy = projection.world_to_screen(matrix, (x, y))    # None where a click would not reach (x, y)
+        sx, sy = projection.project(matrix, (x, y))            # also off screen and under the HUD; None behind the camera
 
     matrix is the view matrix from MemoryReader.get_view_matrix(): clip = matrix @ (x, y, z, 1), and clip x / w and
     y / w run from -1 to 1 across the viewport, y up. viewport is (left, top, width, height) of the full
@@ -17,6 +18,10 @@ class CameraScreenProjection:
     """
 
     MAP_MIN = -16352        # world x / y of index 0 in map-height.npy (GetWorldMinX / GetWorldMinY)
+    # Where a click reaches the world, as (left, top, right, bottom) pixels of a 4K screen (16:9), scaled to the
+    # viewport: below the top bar of heroes, above the minimap's top edge, and 40 px in from the sides, where Dota pans
+    # the camera. Measured off a 4K screenshot (2026-10-10).
+    CLICKABLE = (40, 90, 3800, 1670)
 
     def __init__(self, viewport):
         left, top, width, height = viewport
@@ -29,11 +34,28 @@ class CameraScreenProjection:
         return int(self.heights[round(x) - self.MAP_MIN, round(y) - self.MAP_MIN])
 
     def world_to_screen(self, matrix, world):
-        """Screen pixel of the terrain point at world (x, y)."""
+        """Screen pixel of the terrain point at world (x, y) where a click reaches it; None if it would not: behind the
+        camera, or outside CLICKABLE."""
+        pixel = self.project(matrix, world)
+        return pixel if pixel and self.clickable(pixel) else None
+
+    def project(self, matrix, world):
+        """Screen pixel of the terrain point at world (x, y), wherever it lands: off screen and under the HUD too.
+        None behind the camera, where the projection would mirror it."""
         x, y = world[:2]
         clip = matrix @ (x, y, self.height(x, y), 1)
+        if clip[3] <= 0:
+            return None
         return (self.center[0] + self.half_size[0] * clip[0] / clip[3],
                 self.center[1] - self.half_size[1] * clip[1] / clip[3])
+
+    def clickable(self, pixel):
+        """Whether a click at a screen pixel reaches the world: inside CLICKABLE."""
+        (cx, cy), (half_width, half_height) = self.center, self.half_size
+        x = (pixel[0] - cx + half_width) / half_width * 1920      # in 4K pixels
+        y = (pixel[1] - cy + half_height) / half_height * 1080
+        left, top, right, bottom = self.CLICKABLE
+        return left <= x < right and top <= y < bottom
 
     def screen_to_world(self, matrix, screen):
         """Terrain point (x, y, z) under a screen pixel.

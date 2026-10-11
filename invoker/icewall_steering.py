@@ -17,7 +17,6 @@ from utils.camera import CameraScreenProjection
 from utils.dedup_queue import DedupeQueue
 from utils.window import dota_is_foreground, hud_surface
 
-CLICKABLE = (0.02, 0.06, 0.98, 0.76)    # left, top, right, bottom fractions of the viewport above the HUD
 MOVE_KEY, STOP_KEY = "m", "s"
 DISTANCE_EPSILON, ANGLE_EPSILON = 50, 3     # world units past WALL_DISTANCE and degrees off the facing under which a press clicks nothing
 
@@ -29,11 +28,6 @@ def wall_facing(hero, target, side):
     (side 1) or right (-1) part."""
     dx, dy = target[0] - hero[0], target[1] - hero[1]
     return math.atan2(dy, dx) - side * math.acos(WALL_DISTANCE / math.hypot(dx, dy))
-
-
-def clickable(viewport, pixel):
-    left, top, width, height = viewport
-    return CLICKABLE[0] <= (pixel[0] - left) / width <= CLICKABLE[2] and CLICKABLE[1] <= (pixel[1] - top) / height <= CLICKABLE[3]
 
 
 class IcewallSteering:
@@ -80,8 +74,9 @@ class IcewallSteering:
                 return
             point = hero[0] + WALL_DISTANCE * math.cos(facing), hero[1] + WALL_DISTANCE * math.sin(facing)
         pixel = projection.world_to_screen(matrix, point)
-        if clickable(viewport, pixel):
-            with controller.pressed(MOVE_KEY):
-                self.cursor_overlay.right_click(*pixel)
-            if mode != "walk":
-                controller.tap(STOP_KEY)    # stops the walk, not the turn
+        if not pixel:
+            return
+        with controller.pressed(MOVE_KEY):
+            self.cursor_overlay.right_click(*pixel)
+        if mode != "walk":
+            controller.tap(STOP_KEY)    # stops the walk, not the turn

@@ -4,8 +4,7 @@
     monitor.activate()                      # watch the icons for the next ACTIVE_SECONDS; call again to keep watching
     state = monitor.states["tinker_laser"]  # its AbilityState, updated every frame while active
     state.castable                          # available, or not known (None)
-    state.on_casting = f                    # f() on every frame it is casting: through the cast point
-    state.on_casted = f                     # f() when casting turns into cooldown: the cast went off
+    state.on_casting = f                    # f() when any other state, None too, turns casting: once per cast
     state.on_available = f                  # f() when any other state, None too, turns available
 
 While active, its own thread grabs the six ability icons every frame (a GDI copy waits for the next composed
@@ -17,12 +16,15 @@ Each icon and its reference are shrunk to 32x32 and compared:
   casting      its share of green pixels (G - B above 25) is over 3 points above the reference's. Dota sweeps a
                green wash over the icon during the cast point; cooldown greys it and no mana turns it blue, which
                only lower that share.
-  available    otherwise, if the RMS difference is below 35.
+  available    otherwise, if its darkening is below 30: the RMS difference, with pixels brighter than the
+               reference's counted as no difference. The white glint Dota sweeps over an icon as its cooldown
+               ends (over all six as Rearm ends) only brightens it.
   no_mana      otherwise, if over 40 % of its pixels are blue (B - R above 20): no mana washes the icon blue. A
                cooldown without the mana for the next cast looks the same, with its countdown on top.
   cooldown     otherwise: cooldown greys and darkens the icon.
-On 4K, 1080p and 900p screenshots: available RMS ~1 at the references' resolution and <= 22 at another, the
-others >= 45; casting raises the green share >= 13 points, the other states <= 0.4. On one 4K screenshot each,
+In a 4K recording of six Rearm combos, the darkening is <= 23 while available, glint included, and >= 39 on
+cooldown; on 4K, 1080p and 900p screenshots, the full RMS difference (which bounds it) of an available icon is
+<= 22. Casting raises the green share >= 13 points, the other states <= 0.4. On one 4K screenshot each,
 the blue share is <= 0.19 on cooldown and >= 0.63 without mana (0.63: Warp Flare on cooldown without mana).
 
 Assumes the borderless window's HUD with six abilities (Tinker with Aghanim's Shard).
@@ -91,11 +93,11 @@ def small(icon):
 def classify(icon, ref):
     green_share = lambda image: (image[..., 1] - image[..., 2] > 25).mean()
     green_rise = green_share(icon) - green_share(ref)
-    difference = np.sqrt(((icon - ref) ** 2).mean())
+    darkening = np.sqrt((np.minimum(icon - ref, 0) ** 2).mean())     # brighter pixels count as 0: the glint
     blue_share = (icon[..., 2] - icon[..., 0] > 20).mean()
     if green_rise > 0.03:
         return "casting"
-    elif difference < 35:
+    elif darkening < 30:
         return "available"
     elif blue_share > 0.4:
         return "no_mana"
@@ -111,14 +113,12 @@ def load_references():
 class AbilityState:
     """One ability's state off its icon: "available", "casting", "cooldown" or "no_mana"; None while not known.
 
-    Set the callbacks to be told of a state or a change; they run on the monitor's thread, so they should return
-    quickly: on_casting runs every frame while casting.
+    Set the callbacks to be told of a change; they run on the monitor's thread, so they should return quickly.
     """
 
     def __init__(self):
         self.state = None
-        self.on_casting = None          # f(): this frame it is casting
-        self.on_casted = None           # f(): casting turned into cooldown
+        self.on_casting = None          # f(): any other state, None too, turned casting
         self.on_available = None        # f(): any other state, None too, turned available
 
     @property
@@ -129,10 +129,8 @@ class AbilityState:
     def update(self, state):
         """The state in the latest frame; calls the callbacks it calls for."""
         previous, self.state = self.state, state
-        if state == "casting" and self.on_casting:
+        if previous != "casting" and state == "casting" and self.on_casting:
             self.on_casting()
-        if previous == "casting" and state == "cooldown" and self.on_casted:
-            self.on_casted()
         if previous != "available" and state == "available" and self.on_available:
             self.on_available()
 

@@ -9,7 +9,8 @@ MemoryReader uses Offsets and Process, which know nothing of each other. The app
     memory = MemoryReader()         # hooks the running Dota; ProcessLookupError if it is not running
     memory.get_view_matrix()        # 4 x 4 array (clip = matrix @ (x, y, z, 1)), or None before the first frame
     memory.get_hero_position()      # (x, y, z, yaw), or None while there is no hero: main menu, hero pick
-    memory.get_hover_enemy_hero_position()  # (x, y, z) of the enemy hero under the cursor, or None while there is none
+    memory.get_hover_enemy_hero()   # address of the enemy hero entity under the cursor, or None while there is none
+    memory.get_entity_position(entity)      # (x, y, z) of the entity at that address
 
 A MemoryReader lives inside one Dota session: once Dota exits, its reads raise ProcessLookupError.
 
@@ -258,7 +259,8 @@ class MemoryReader:
         memory = MemoryReader()                     # ProcessLookupError if Dota is not running
         memory.get_view_matrix()                    # 4 x 4 array, or None before Dota draws a frame
         memory.get_hero_position()                  # (x, y, z, yaw), or None while there is no hero
-        memory.get_hover_enemy_hero_position()      # (x, y, z) of the enemy hero under the cursor, or None
+        memory.get_hover_enemy_hero()               # address of the enemy hero entity under the cursor, or None
+        memory.get_entity_position(entity)          # (x, y, z) of the entity at that address
         memory.read("controller-hero", controller)  # one variable of the object at an address
 
     Meant to live inside one Dota session: every read raises ProcessLookupError once Dota has exited. Holds nothing
@@ -325,13 +327,13 @@ class MemoryReader:
         yaw = self.read("node-rotation", node)[1]       # of pitch, yaw, roll
         return *pos, yaw % 360
 
-    def get_hover_enemy_hero_position(self):
-        """(x, y, z) of the enemy hero under the cursor, as Dota picks it, or None while there is none: nothing, not a
-        hero, or on your team. 11 reads; 1 for nothing under the cursor.
+    def get_hover_enemy_hero(self):
+        """Address of the enemy hero entity under the cursor, as Dota picks it, or None while there is none: nothing,
+        not a hero, or on your team. 9 reads; 1 for nothing under the cursor.
 
-        The hero's own world position, where it stands: not the point under the cursor. A hero is an npc_dota_hero_
-        entity (the Hero Demo's target dummy is one), an enemy one on any team but your player controller's.
-        Illusions count: the game does not tell an enemy's apart either.
+        A hero is an npc_dota_hero_ entity (the Hero Demo's target dummy is one), an enemy one on any team but your
+        player controller's. Illusions count: the game does not tell an enemy's apart either. The address is the
+        entity's until Dota destroys it (an illusion dies); after that it may hold anything.
         """
         handle = self.read("hovered-entity")
         entry = handle != self.NO_ENTITY and self.entry(handle)
@@ -342,4 +344,8 @@ class MemoryReader:
         controller = self.read("local-controller")
         if not controller or self.read("entity-team", entity) == self.read("entity-team", controller):
             return None
+        return entity
+
+    def get_entity_position(self, entity):
+        """(x, y, z) of the entity at an address, as from get_hover_enemy_hero(): where it stands. 2 reads."""
         return self.read("node-position", self.read("entity-scene-node", entity))
