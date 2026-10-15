@@ -4,7 +4,8 @@
     monitor.activate()                      # watch the icons for the next ACTIVE_SECONDS; call again to keep watching
     state = monitor.states["tinker_laser"]  # its AbilityState, updated every frame while active
     state.castable                          # available, or not known (None)
-    state.on_casting = f                    # f() when any other state, None too, turns casting: once per cast
+    state.on_casting = f                    # f() every frame it is casting
+    state.on_casted = f                     # f() when casting turns cooldown or no_mana: the cast went off
     state.on_available = f                  # f() when any other state, None too, turns available
 
 While active, its own thread grabs the six ability icons every frame (a GDI copy waits for the next composed
@@ -113,12 +114,14 @@ def load_references():
 class AbilityState:
     """One ability's state off its icon: "available", "casting", "cooldown" or "no_mana"; None while not known.
 
-    Set the callbacks to be told of a change; they run on the monitor's thread, so they should return quickly.
+    Set the callbacks to be told of a state or a change; they run on the monitor's thread, so they should return
+    quickly: on_casting runs every frame while casting.
     """
 
     def __init__(self):
         self.state = None
-        self.on_casting = None          # f(): any other state, None too, turned casting
+        self.on_casting = None          # f(): this frame it is casting
+        self.on_casted = None           # f(): casting turned into cooldown, or no_mana (a cooldown without the mana for the next cast): the cast went off, not cancelled
         self.on_available = None        # f(): any other state, None too, turned available
 
     @property
@@ -129,8 +132,10 @@ class AbilityState:
     def update(self, state):
         """The state in the latest frame; calls the callbacks it calls for."""
         previous, self.state = self.state, state
-        if previous != "casting" and state == "casting" and self.on_casting:
+        if state == "casting" and self.on_casting:
             self.on_casting()
+        if previous == "casting" and state in ("cooldown", "no_mana") and self.on_casted:
+            self.on_casted()
         if previous != "available" and state == "available" and self.on_available:
             self.on_available()
 

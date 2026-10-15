@@ -3,12 +3,13 @@ import ctypes.wintypes
 import math
 import threading
 from contextlib import contextmanager
+from dataclasses import dataclass
 import keyboard
+import pywintypes
 import uvicorn
 import win32api
 from fastapi import FastAPI, Request
 from pynput import keyboard as pk
-from pynput import mouse as pm
 import time
 from tinker.ability_monitor import TinkerAbilityMonitor
 from tinker.repeat_key import TinkerRepeatKey
@@ -20,21 +21,72 @@ from utils.window import hud_surface
 LOOP_INTERVAL = 0.03
 
 controller = pk.Controller()
-mouse = pm.Controller()
 
-COMBO = {                           # ability -> hotkey, in casting order: each loop casts the first castable one
+KEY_BINDING = {                     # ability -> its Dota hotkey
     "tinker_warp_grenade":   "d",
     "tinker_laser":          "q",
     "tinker_deploy_turrets": "e",
     "tinker_rearm":          "f",
 }
-AUTOKEY = "o"
-HERO_ONLY_KEY = "h"                 # Dota: while held, clicks and casts interact only with heroes; held with AUTOKEY
+AUTOKEY = {                         # autokey -> the abilities it casts while held, in casting order: each loop casts the first castable one
+    "o": ["tinker_warp_grenade", "tinker_deploy_turrets", "tinker_laser", "tinker_rearm"],
+    "p": ["tinker_warp_grenade", "tinker_laser", "tinker_rearm"],
+}
+HERO_ONLY_KEY = "h"                 # Dota: while held, clicks and casts interact only with heroes; held with an autokey
 SLOT_KEYS = {"slot0": "1", "slot1": "2", "slot2": "3", "slot3": "z", "slot4": "x", "slot5": "6"}  # GSI inventory slot -> Dota hotkey; slot6-8 are the backpack
 REPEAT_ITEMS = {"item_blink", "item_overwhelming_blink", "item_swift_blink", "item_arcane_blink","item_cyclone", "item_wind_waker"}
 EXTRA_ITEMS = {"item_sheepstick", "item_dagon", "item_dagon_2", "item_dagon_3", "item_dagon_4", "item_dagon_5", "item_ethereal_blade", "item_ghost", "item_soul_ring", "item_orchid", "item_bloodthorn"}         # pressed every loop
-assert not set(COMBO.values()) & set(SLOT_KEYS.values()), "combo and item keys overlap"
-TURRET_BEYOND = 10                  # Deploy Turrets aims this far past Warp Flare's target, on the line from your hero through it
+assert not set(KEY_BINDING.values()) & set(SLOT_KEYS.values()), "ability and item keys overlap"
+TURRET_BEYOND = 10                  # Deploy Turrets aims this far past where Warp Flare lands its target, on the line from your hero through it
+WARP_FLARE_BASE_CAST_RANGE = 700    # the game's scripts/npc/heroes/npc_dota_hero_tinker.txt
+CAST_RANGE_BONUS = {"item_aether_lens": (225,), "item_enhancement_keen_eyed": (125, 135, 145)}    # by item_level (the game's scripts/npc/items.txt)
+CAST_RANGE_SLOTS = {*SLOT_KEYS, "neutral0", "neutral1"}     # GSI slots where they work: inventory and neutral, not the backpack
+WARP_FLARE_PUSH = 0.6               # Warp Flare's warp_distance_factor: the teleport is this share of the cast range at no distance, down to 0 at max range
+WARP_FLARE_SPEED = 1900             # Warp Flare's projectile speed, world units per second
+WARP_FLARE_ROOT = 2                 # Warp Flare's debuff_duration: its target stays rooted where it lands this many seconds
+
+
+@dataclass
+class WarpFlareLanding:
+    """Warp Flare's target, and where and when it is predicted to land, from the cast; None while there is none."""
+    position: tuple = None          # (x, y) the target is teleported to
+    lands_at: float = None          # time.monotonic() it lands there
+    entity: int = None              # address of the target entity
+    entity_id: int = None           # its ID (MemoryReader.get_entity_id): another once the address holds another entity
+
+    def clear(self):
+        self.position = self.lands_at = self.entity = self.entity_id = None
+
+    def predict_position(self, hero, entity, cast_range):
+        """Predicts it for a Warp Flare going off now from `hero` (x, y, ...) at the entity at address `entity`: the
+        target is teleported straight away from the hero, by WARP_FLARE_PUSH of the cast range at no distance, falling
+        linearly to nothing at the cast range; it lands after the flare's flight to it."""
+        target = memory.get_entity_position(entity)
+        dx, dy = target[0] - hero[0], target[1] - hero[1]
+        distance = math.hypot(dx, dy) or 1          # on top of each other: no direction to push in, dx and dy are 0
+        push = WARP_FLARE_PUSH * max(0, cast_range - distance)
+        self.lands_at = time.monotonic() + distance / WARP_FLARE_SPEED
+        self.position = target[0] + dx / distance * push, target[1] + dy / distance * push
+        self.entity, self.entity_id = entity, memory.get_entity_id(entity)
+
+    def get_entity(self):
+        """Address of the target entity; None without one, or once the address holds another entity (its ID is not
+        entity_id any more) or nothing readable."""
+        entity, entity_id = self.entity, self.entity_id         # once each: other threads set them
+        if entity is None or entity_id is None:
+            return None
+        try:
+            return entity if memory.get_entity_id(entity) == entity_id else None
+        except pywintypes.error:        # the address was freed
+            return None
+
+    def get_position(self):
+        """(x, y) the target lands at; None without a prediction, or once its root is over (WARP_FLARE_ROOT after it
+        lands): the target may have walked off the spot."""
+        position, lands_at = self.position, self.lands_at       # once each: other threads set them
+        if position is None or lands_at is None or time.monotonic() > lands_at + WARP_FLARE_ROOT:
+            return None
+        return position
 
 
 monitor = None                     # TinkerAbilityMonitor: the ability states off the screen
@@ -43,9 +95,11 @@ projection = None                   # CameraScreenProjection of Dota's client ar
 human_mouse = None                  # HumanMouseController: glides the real cursor like a hand would
 repeat_key = None                   # TinkerRepeatKey: GSI sets its keys
 extra_keys = set()                  # slot keys of the EXTRA_ITEMS in the inventory, set by GSI
-held = threading.Event()            # AUTOKEY is down
+autokey = None                      # the AUTOKEY key pressed last
+held = threading.Event()            # that autokey is down
 suppress_rearm = False
-warp_flare_target = None            # address of the enemy hero entity hovered as Warp Flare started casting; None if none was, and once Warp Flare is available again
+warp_flare_cast_range = WARP_FLARE_BASE_CAST_RANGE  # with the CAST_RANGE_BONUS items, set by GSI
+warp_landing = WarpFlareLanding()   # of the last Warp Flare cast; cleared when an autokey goes down or up
 
 app = FastAPI()
 
@@ -55,31 +109,34 @@ def press_and_release(key):
     controller.release(key)
 
 
-def on_trigger(event):
-    global suppress_rearm
-    if event.event_type == keyboard.KEY_UP:
-        held.clear()
-        controller.release(HERO_ONLY_KEY)
-    elif not held.is_set():         # a fresh press, not auto-repeat
+def on_trigger(key, event):
+    global suppress_rearm, autokey
+
+    if event.event_type == keyboard.KEY_DOWN:
+        autokey = key
+        warp_landing.clear()
         suppress_rearm = False
         held.set()
         controller.press(HERO_ONLY_KEY)
 
+    if event.event_type == keyboard.KEY_UP:
+        autokey = None
+        warp_landing.clear()
+        held.clear()
+        controller.release(HERO_ONLY_KEY)
 
 def on_press(key, injected):
     global suppress_rearm
-    if not injected and held.is_set() and key_name(key) != AUTOKEY:
+    if not injected and held.is_set() and key_name(key) not in AUTOKEY:
         suppress_rearm = True         # a key of the user's own while the autokey runs, not one of our sent keys
 
 
-def on_casting_warp_flare():
-    global warp_flare_target
-    warp_flare_target = memory.get_hover_enemy_hero()
-
-
-def on_available_warp_flare():
-    global warp_flare_target
-    warp_flare_target = None
+def predict_warp_landing():
+    """Predicts where and when Warp Flare's target, the hovered enemy hero, lands (warp_landing), the flare going off
+    now; keeps the last prediction while no enemy hero is hovered."""
+    entity, hero = memory.get_hover_enemy_hero(), memory.get_hero_position()     # hero: (x, y, z, yaw)
+    if entity and hero:
+        warp_landing.predict_position(hero, entity, warp_flare_cast_range)
 
 
 @contextmanager
@@ -99,66 +156,75 @@ def cursor_held_at(pixel):
         win32api.ClipCursor((previous.left, previous.top, previous.right, previous.bottom))
 
 
-def cast_at(ability, point):
-    """Presses the ability's key with the real cursor held on the terrain at world point (x, y); nothing where a click
-    would not reach it (world_to_screen): off screen, near its edges or under the HUD."""
-    pixel = projection.world_to_screen(memory.get_view_matrix(), point)
-    if not pixel:
+def cast_turrets():
+    """Deploy Turrets. With a Warp Flare landing not expired: TURRET_BEYOND past where it lands its target, on the line
+    from your hero through it, then the cursor glides onto that spot, for the next cast at the cursor; nothing where a
+    click would not reach (world_to_screen): off screen, near its edges or under the HUD. Otherwise where the cursor
+    is, as is."""
+    landing = warp_landing.get_position()
+    if landing is None:
+        press_and_release(KEY_BINDING["tinker_deploy_turrets"])
         return
-    with cursor_held_at(pixel):
-        press_and_release(COMBO[ability])
+
+    (x, y), hero = landing, memory.get_hero_position()     # hero: (x, y, z, yaw)
+    dx, dy = x - hero[0], y - hero[1]
+    distance = math.hypot(dx, dy) or 1          # on top of each other: aim at the landing itself
+    aim = projection.world_to_screen(memory.get_view_matrix(), (x + dx / distance * TURRET_BEYOND, y + dy / distance * TURRET_BEYOND))
+    if not aim:
+        return
+    with cursor_held_at(aim):
+        press_and_release(KEY_BINDING["tinker_deploy_turrets"])
+
+    # spot = projection.world_to_screen(memory.get_view_matrix(), (x, y))     # again: the camera may have moved meanwhile
+    # if spot:
+    #     human_mouse.move_to(tuple(map(round, spot)))
 
 
 def cast_laser():
-    """Laser at Warp Flare's target, the cursor held where it stands; nothing while a click there would not reach it.
-    Without a target, Laser where the cursor is."""
-    target = warp_flare_target      # once: the hooks set it on the monitor's thread
-    if target:
-        cast_at("tinker_laser", memory.get_entity_position(target))
-    else:
-        press_and_release(COMBO["tinker_laser"])
-
-
-def cast_turrets():
-    """Deploy Turrets TURRET_BEYOND past where Warp Flare's target stands, on the line from your hero through it;
-    nothing while a click there would not reach it. Without a target, only right-clicks where the cursor is: no
-    cursor move, no cast key."""
-    target = warp_flare_target      # once: the hooks set it on the monitor's thread
-    if target:
-        (x, y, _), hero = memory.get_entity_position(target), memory.get_hero_position()     # hero: (x, y, z, yaw)
-        dx, dy = x - hero[0], y - hero[1]
-        distance = math.hypot(dx, dy) or 1          # on top of each other: aim at the target itself
-        cast_at("tinker_deploy_turrets", (x + dx / distance * TURRET_BEYOND, y + dy / distance * TURRET_BEYOND))
-    else:
-        mouse.click(pm.Button.right)
+    """Laser. While Warp Flare's target is still the entity it was (warp_landing.get_entity()): with the real cursor held
+    on where it stands now; nothing where a click there would not reach. Otherwise where the cursor is, as is."""
+    entity = warp_landing.get_entity()
+    if entity is None:
+        press_and_release(KEY_BINDING["tinker_laser"])
+        return
+    print(entity)
+    pixel = projection.world_to_screen(memory.get_view_matrix(), memory.get_entity_position(entity))
+    if not pixel:
+        return
+    with cursor_held_at(pixel):
+        press_and_release(KEY_BINDING["tinker_laser"])
 
 
 @app.post("/")
 async def gsi(request: Request):
-    global extra_keys
+    global extra_keys, warp_flare_cast_range
     items = (await request.json()).get("items")
     if items:
         names = {key: items.get(slot, {}).get("name") for slot, key in SLOT_KEYS.items()}
         repeat_key.keys = {key for key, name in names.items() if name in REPEAT_ITEMS}
         extra_keys = {key for key, name in names.items() if name in EXTRA_ITEMS}
+        levels = {items.get(slot, {}).get("name"): items.get(slot, {}).get("item_level", 1) for slot in CAST_RANGE_SLOTS}  # a second copy adds nothing
+        bonus = sum(by_level[min(levels[name], len(by_level)) - 1] for name, by_level in CAST_RANGE_BONUS.items() if name in levels)
+        warp_flare_cast_range = WARP_FLARE_BASE_CAST_RANGE + bonus
     return {}
 
 
 def worker():
     while True:
         held.wait()
-        monitor.activate()            # keeps it watching while AUTOKEY is held; all castable until its first frame
-        castable = [a for a in COMBO if monitor.states[a].castable]    # casting counts as not castable
-        to_fire = castable[0] if castable else next(iter(COMBO))      # none castable: the first
+        monitor.activate()            # keeps it watching while an autokey is held; all castable until its first frame
+        combo = AUTOKEY[autokey]
+        castable = [a for a in combo if monitor.states[a].castable]    # casting counts as not castable
+        to_fire = castable[0] if castable else combo[0]      # none castable: the first
         if suppress_rearm and to_fire == "tinker_rearm":
             continue
 
-        if to_fire == "tinker_laser":
-            cast_laser()
-        elif to_fire == "tinker_deploy_turrets":
+        if to_fire == "tinker_deploy_turrets":
             cast_turrets()
+        elif to_fire == "tinker_laser":
+            cast_laser()
         else:
-            press_and_release(COMBO[to_fire])
+            press_and_release(KEY_BINDING[to_fire])
         for k in extra_keys:
             press_and_release(k)
 
@@ -167,14 +233,16 @@ def worker():
 
 if __name__ == "__main__":
     monitor = TinkerAbilityMonitor()  # first: it makes the process DPI aware
+    warp_flare = monitor.states["tinker_warp_grenade"]
+    warp_flare.on_casted = predict_warp_landing         # the flare goes off now: the prediction that counts
+    warp_flare.on_casting = predict_warp_landing        # approximate: a backup for no enemy hero hovered as it goes off
     from humanmouse import HumanMouseController     # after that: pyautogui's import would set the DPI awareness first
     human_mouse = HumanMouseController(speed_factor=1000)
     memory = MemoryReader()
     projection = CameraScreenProjection(hud_surface()[0])
-    monitor.states["tinker_warp_grenade"].on_casting = on_casting_warp_flare
-    monitor.states["tinker_warp_grenade"].on_available = on_available_warp_flare
     repeat_key = TinkerRepeatKey()
-    keyboard.hook_key(AUTOKEY, on_trigger, suppress=True)
+    for key in AUTOKEY:
+        keyboard.hook_key(key, lambda event, key=key: on_trigger(key, event), suppress=True)
     threading.Thread(target=worker, daemon=True).start()
     pk.Listener(on_press=on_press).start()
     uvicorn.run(app, host="127.0.0.1", port=3000, log_level="warning")     # GSI posts; Ctrl + C quits

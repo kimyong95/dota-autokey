@@ -11,6 +11,7 @@ MemoryReader uses Offsets and Process, which know nothing of each other. The app
     memory.get_hero_position()      # (x, y, z, yaw), or None while there is no hero: main menu, hero pick
     memory.get_hover_enemy_hero()   # address of the enemy hero entity under the cursor, or None while there is none
     memory.get_entity_position(entity)      # (x, y, z) of the entity at that address
+    memory.get_entity_id(entity)            # its ID: another once the address holds another entity
 
 A MemoryReader lives inside one Dota session: once Dota exits, its reads raise ProcessLookupError.
 
@@ -71,6 +72,7 @@ class Offsets:
     SCHEMA = {
         "entry-size": "CEntityIdentity",                                # an entry of the entity list
         "entry-designer-name": "CEntityIdentity.m_designerName",        # e.g. "npc_dota_hero_tinker"
+        "entity-identity": "CEntityInstance.m_pEntity",                 # an entity's entry of the entity list
         "controller-hero": "C_DOTAPlayerController.m_hAssignedHero",    # your hero, as a handle
         "entity-scene-node": "C_BaseEntity.m_pGameSceneNode",           # where an entity is
         "entity-team": "C_BaseEntity.m_iTeamNum",                       # 2 Radiant, 3 Dire, 4 neutral
@@ -82,6 +84,7 @@ class Offsets:
         "entity-chunks": 0x10,      # in the entity system: pointers to the chunks of entity list entries
         "chunk-size": 512,          # entries per chunk
         "entry-entity": 0x0,        # in an entry: pointer to the entity
+        "entry-handle": 0x10,       # in an entry: the entity's own handle, serial number too (seen in Dota 2026-10-15)
         "handle-index": 0x7FFF,     # the entity index bits of a handle; the bits above are a serial number
     }
 
@@ -261,6 +264,7 @@ class MemoryReader:
         memory.get_hero_position()                  # (x, y, z, yaw), or None while there is no hero
         memory.get_hover_enemy_hero()               # address of the enemy hero entity under the cursor, or None
         memory.get_entity_position(entity)          # (x, y, z) of the entity at that address
+        memory.get_entity_id(entity)                # its ID: another once the address holds another entity
         memory.read("controller-hero", controller)  # one variable of the object at an address
 
     Meant to live inside one Dota session: every read raises ProcessLookupError once Dota has exited. Holds nothing
@@ -277,7 +281,9 @@ class MemoryReader:
         "hovered-entity": HANDLE,           # the entity under the cursor; NO_ENTITY when there is none
         "entity-chunks": POINTER,           # one per chunk, to its entries
         "entry-entity": POINTER,
+        "entry-handle": HANDLE,
         "entry-designer-name": POINTER,     # to text
+        "entity-identity": POINTER,         # to its entry
         "controller-hero": HANDLE,
         "entity-scene-node": POINTER,
         "entity-team": TEAM,
@@ -333,7 +339,7 @@ class MemoryReader:
 
         A hero is an npc_dota_hero_ entity (the Hero Demo's target dummy is one), an enemy one on any team but your
         player controller's. Illusions count: the game does not tell an enemy's apart either. The address is the
-        entity's until Dota destroys it (an illusion dies); after that it may hold anything.
+        entity's until Dota destroys it (an illusion dies); after that it may hold anything: get_entity_id() tells.
         """
         handle = self.read("hovered-entity")
         entry = handle != self.NO_ENTITY and self.entry(handle)
@@ -349,3 +355,10 @@ class MemoryReader:
     def get_entity_position(self, entity):
         """(x, y, z) of the entity at an address, as from get_hover_enemy_hero(): where it stands. 2 reads."""
         return self.read("node-position", self.read("entity-scene-node", entity))
+
+    def get_entity_id(self, entity):
+        """ID of the entity at an address, as from get_hover_enemy_hero(): its handle, unique to it while Dota runs
+        (its index in the entity list, and a serial number Dota changes whenever it gives the index to another).
+        Another once the address holds another entity. 2 reads; pywintypes.error if the address is unreadable now.
+        """
+        return self.read("entry-handle", self.read("entity-identity", entity))
