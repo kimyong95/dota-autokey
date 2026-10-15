@@ -1,8 +1,5 @@
-import ctypes
-import ctypes.wintypes
 import math
 import threading
-from contextlib import contextmanager
 from dataclasses import dataclass
 import keyboard
 import pywintypes
@@ -14,7 +11,6 @@ import time
 from tinker.ability_monitor import TinkerAbilityMonitor
 from tinker.repeat_key import TinkerRepeatKey
 from utils.camera import CameraScreenProjection
-from utils.keyboard import key_name
 from utils.memory import MemoryReader
 from utils.window import hud_surface
 
@@ -73,12 +69,10 @@ class WarpFlareLanding:
         """Address of the target entity; None without one, or once the address holds another entity (its ID is not
         entity_id any more) or nothing readable."""
         entity, entity_id = self.entity, self.entity_id         # once each: other threads set them
-        if entity is None or entity_id is None:
+        if entity is None or entity_id is None or memory.get_entity_id(entity) != entity_id:
             return None
-        try:
-            return entity if memory.get_entity_id(entity) == entity_id else None
-        except pywintypes.error:        # the address was freed
-            return None
+        else:
+            return entity
 
     def get_position(self):
         """(x, y) the target lands at; None without a prediction, or once its root is over (WARP_FLARE_ROOT after it
@@ -97,7 +91,6 @@ repeat_key = None                   # TinkerRepeatKey: GSI sets its keys
 extra_keys = set()                  # slot keys of the EXTRA_ITEMS in the inventory, set by GSI
 autokey = None                      # the AUTOKEY key pressed last
 held = threading.Event()            # that autokey is down
-suppress_rearm = False
 warp_flare_cast_range = WARP_FLARE_BASE_CAST_RANGE  # with the CAST_RANGE_BONUS items, set by GSI
 warp_landing = WarpFlareLanding()   # of the last Warp Flare cast; cleared when an autokey goes down or up
 
@@ -110,25 +103,20 @@ def press_and_release(key):
 
 
 def on_trigger(key, event):
-    global suppress_rearm, autokey
+    global autokey
 
+    # Ignore auto-repeat
+    if event.event_type == keyboard.KEY_DOWN and held.is_set() and key == autokey:
+        return
+        
+    warp_landing.clear()
     if event.event_type == keyboard.KEY_DOWN:
         autokey = key
-        warp_landing.clear()
-        suppress_rearm = False
         held.set()
         controller.press(HERO_ONLY_KEY)
-
-    if event.event_type == keyboard.KEY_UP:
-        autokey = None
-        warp_landing.clear()
+    else:
         held.clear()
         controller.release(HERO_ONLY_KEY)
-
-def on_press(key, injected):
-    global suppress_rearm
-    if not injected and held.is_set() and key_name(key) not in AUTOKEY:
-        suppress_rearm = True         # a key of the user's own while the autokey runs, not one of our sent keys
 
 
 def predict_warp_landing():
@@ -139,28 +127,17 @@ def predict_warp_landing():
         warp_landing.predict_position(hero, entity, warp_flare_cast_range)
 
 
-@contextmanager
-def cursor_held_at(pixel):
-    """Glides the real cursor to a screen pixel (human_mouse), then holds it exactly there until the block ends: confined
-    to that one pixel (ClipCursor), so the user's mouse cannot move it in between. The previous confinement (Dota's
-    "lock mouse to window") comes back after."""
+def move_cursor_to(pixel):
+    """Glides the real cursor to a screen pixel (human_mouse)."""
     x, y = map(round, pixel)
     human_mouse.move_to((x, y))
-    previous = ctypes.wintypes.RECT()
-    ctypes.windll.user32.GetClipCursor(ctypes.byref(previous))     # pywin32 has no GetClipCursor
-    win32api.ClipCursor((x, y, x + 1, y + 1))
-    win32api.SetCursorPos((x, y))                   # the glide can end a pixel off, or the user nudge it
-    try:
-        yield
-    finally:
-        win32api.ClipCursor((previous.left, previous.top, previous.right, previous.bottom))
+    win32api.SetCursorPos((x, y))                   # the glide can end a pixel off
 
 
 def cast_turrets():
     """Deploy Turrets. With a Warp Flare landing not expired: TURRET_BEYOND past where it lands its target, on the line
-    from your hero through it, then the cursor glides onto that spot, for the next cast at the cursor; nothing where a
-    click would not reach (world_to_screen): off screen, near its edges or under the HUD. Otherwise where the cursor
-    is, as is."""
+    from your hero through it; nothing where a click would not reach (world_to_screen): off screen, near its edges or
+    under the HUD. Otherwise where the cursor is, as is."""
     landing = warp_landing.get_position()
     if landing is None:
         press_and_release(KEY_BINDING["tinker_deploy_turrets"])
@@ -169,30 +146,26 @@ def cast_turrets():
     (x, y), hero = landing, memory.get_hero_position()     # hero: (x, y, z, yaw)
     dx, dy = x - hero[0], y - hero[1]
     distance = math.hypot(dx, dy) or 1          # on top of each other: aim at the landing itself
-    aim = projection.world_to_screen(memory.get_view_matrix(), (x + dx / distance * TURRET_BEYOND, y + dy / distance * TURRET_BEYOND))
-    if not aim:
+    screen_position = projection.world_to_screen(memory.get_view_matrix(), (x + dx / distance * TURRET_BEYOND, y + dy / distance * TURRET_BEYOND))
+    if not screen_position:
         return
-    with cursor_held_at(aim):
-        press_and_release(KEY_BINDING["tinker_deploy_turrets"])
-
-    # spot = projection.world_to_screen(memory.get_view_matrix(), (x, y))     # again: the camera may have moved meanwhile
-    # if spot:
-    #     human_mouse.move_to(tuple(map(round, spot)))
+    move_cursor_to(screen_position)
+    press_and_release(KEY_BINDING["tinker_deploy_turrets"])
 
 
 def cast_laser():
-    """Laser. While Warp Flare's target is still the entity it was (warp_landing.get_entity()): with the real cursor held
-    on where it stands now; nothing where a click there would not reach. Otherwise where the cursor is, as is."""
+    """Laser. While Warp Flare's target is still the entity it was (warp_landing.get_entity()): with the real cursor
+    glided onto where it stands now; nothing where a click there would not reach. Otherwise where the cursor is, as is."""
     entity = warp_landing.get_entity()
     if entity is None:
         press_and_release(KEY_BINDING["tinker_laser"])
         return
-    print(entity)
-    pixel = projection.world_to_screen(memory.get_view_matrix(), memory.get_entity_position(entity))
-    if not pixel:
+
+    screen_position = projection.world_to_screen(memory.get_view_matrix(), memory.get_entity_position(entity))
+    if not screen_position:
         return
-    with cursor_held_at(pixel):
-        press_and_release(KEY_BINDING["tinker_laser"])
+    move_cursor_to(screen_position)
+    press_and_release(KEY_BINDING["tinker_laser"])
 
 
 @app.post("/")
@@ -216,9 +189,6 @@ def worker():
         combo = AUTOKEY[autokey]
         castable = [a for a in combo if monitor.states[a].castable]    # casting counts as not castable
         to_fire = castable[0] if castable else combo[0]      # none castable: the first
-        if suppress_rearm and to_fire == "tinker_rearm":
-            continue
-
         if to_fire == "tinker_deploy_turrets":
             cast_turrets()
         elif to_fire == "tinker_laser":
@@ -244,5 +214,4 @@ if __name__ == "__main__":
     for key in AUTOKEY:
         keyboard.hook_key(key, lambda event, key=key: on_trigger(key, event), suppress=True)
     threading.Thread(target=worker, daemon=True).start()
-    pk.Listener(on_press=on_press).start()
     uvicorn.run(app, host="127.0.0.1", port=3000, log_level="warning")     # GSI posts; Ctrl + C quits

@@ -6,7 +6,6 @@
     state.castable                          # available, or not known (None)
     state.on_casting = f                    # f() every frame it is casting
     state.on_casted = f                     # f() when casting turns cooldown or no_mana: the cast went off
-    state.on_available = f                  # f() when any other state, None too, turns available
 
 While active, its own thread grabs the six ability icons every frame (a GDI copy waits for the next composed
 frame: ~16.7 ms at 60 Hz). ACTIVE_SECONDS after the last activate() it stops and resets every state to None, so
@@ -122,7 +121,6 @@ class AbilityState:
         self.state = None
         self.on_casting = None          # f(): this frame it is casting
         self.on_casted = None           # f(): casting turned into cooldown, or no_mana (a cooldown without the mana for the next cast): the cast went off, not cancelled
-        self.on_available = None        # f(): any other state, None too, turned available
 
     @property
     def castable(self):
@@ -136,8 +134,6 @@ class AbilityState:
             self.on_casting()
         if previous == "casting" and state in ("cooldown", "no_mana") and self.on_casted:
             self.on_casted()
-        if previous != "available" and state == "available" and self.on_available:
-            self.on_available()
 
     def reset(self):
         """Not known any more (None), as before the first look: the monitor stopped watching."""
