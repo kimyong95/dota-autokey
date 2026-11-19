@@ -15,7 +15,7 @@ MemoryReader uses Offsets and Process, which know nothing of each other. The app
 
 A MemoryReader lives inside one Dota session: once Dota exits, its reads raise ProcessLookupError.
 
-The view-matrix and entity-system patterns are from dota2-dumper by Anroshka
+The entity-system pattern is from dota2-dumper by Anroshka
 (https://github.com/Anroshka/dota2-dumper), a Dota port of cs2-dumper by a2x (https://github.com/a2x/cs2-dumper).
 """
 import json
@@ -47,7 +47,7 @@ class Offsets:
     then what it is. Three kinds:
         PATTERN   global variables, found through the code that uses them: module offsets in client.dll
         SCHEMA    class sizes and field offsets, looked up by schema name in Valve's schema tables
-        CONSTANT  fixed parts of Source 2's entity list, which are in neither
+        CONSTANT  fixed parts of Source 2's entity list and of the view render, which are in neither
     """
 
     PATH = Path(__file__).parents[1] / "data" / "memory-offsets.json"
@@ -55,8 +55,9 @@ class Offsets:
     # Each global variable as code that refers to it: byte values, None where any byte may be. The first four None
     # are the variable's address, relative to the end of those four bytes.
     PATTERN = {
-        # lea rcx, [view matrices]; shl rax, 6 (64-byte matrices)
-        "view-matrix": (0x48, 0x8D, 0x0D, None, None, None, None, 0x48, 0xC1, 0xE0, 0x06),
+        # mov rcx, [view render]; mov edx, -1; mov rax, [rcx]; call [rax + 0x30] (its view setup: GetViewSetup(-1))
+        "view-render": (0x48, 0x8B, 0x0D, None, None, None, None,
+                        0xBA, 0xFF, 0xFF, 0xFF, 0xFF, 0x48, 0x8B, 0x01, 0xFF, 0x50, 0x30),
         # mov rbx, [entity system]; mov [a copy], rbx; movsxd r14, [rbx + ...]
         "entity-system": (0x48, 0x8B, 0x1D, None, None, None, None,
                           0x48, 0x89, 0x1D, None, None, None, None, 0x4C, 0x63, 0xB3),
@@ -86,6 +87,8 @@ class Offsets:
         "entry-entity": 0x0,        # in an entry: pointer to the entity
         "entry-handle": 0x10,       # in an entry: the entity's own handle, serial number too (seen in Dota 2026-10-15)
         "handle-index": 0x7FFF,     # the entity index bits of a handle; the bits above are a serial number
+        "render-view-matrix": 0x298,    # in the view render (CDOTAViewRender): its first view setup's (+0x10)
+                                        # world to clip matrix (+0x288), written each frame (seen in Dota 2026-11-19)
     }
 
     def __init__(self, saved):
@@ -275,7 +278,7 @@ class MemoryReader:
     NO_ENTITY = 0xFFFFFFFF          # a handle to no entity
 
     TYPE = {
-        "view-matrix": MATRIX,              # world to clip space, row-major
+        "view-render": POINTER,
         "entity-system": POINTER,
         "local-controller": POINTER,        # your player controller
         "hovered-entity": HANDLE,           # the entity under the cursor; NO_ENTITY when there is none
@@ -289,6 +292,7 @@ class MemoryReader:
         "entity-team": TEAM,
         "node-position": VECTOR,            # world x, y, z
         "node-rotation": ANGLES,            # pitch, yaw, roll in degrees
+        "render-view-matrix": MATRIX,       # world to clip space, row-major
     }
 
     def __init__(self):
@@ -312,10 +316,11 @@ class MemoryReader:
     def get_view_matrix(self):
         """Dota's view matrix of the last frame drawn, world to clip space: clip = matrix @ (x, y, z, 1).
 
-        A 4 x 4 array, or None before Dota has drawn a frame. One read.
+        A 4 x 4 array, or None before Dota has drawn a frame. 2 reads.
         """
-        matrix = np.array(self.read("view-matrix")).reshape(4, 4)
-        return matrix if matrix.any() else None
+        render = self.read("view-render")
+        matrix = render and np.array(self.read("render-view-matrix", render)).reshape(4, 4)
+        return matrix if render and matrix.any() else None
 
     def get_hero_position(self):
         """(x, y, z, yaw) of your hero, or None while there is none: main menu, hero pick. 10 reads.

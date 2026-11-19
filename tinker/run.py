@@ -33,7 +33,7 @@ SLOT_KEYS = {"slot0": "1", "slot1": "2", "slot2": "3", "slot3": "z", "slot4": "x
 REPEAT_ITEMS = {"item_blink", "item_overwhelming_blink", "item_swift_blink", "item_arcane_blink","item_cyclone", "item_wind_waker", "item_glimmer_cape"}
 EXTRA_ITEMS = {"item_sheepstick", "item_dagon", "item_dagon_2", "item_dagon_3", "item_dagon_4", "item_dagon_5", "item_ethereal_blade", "item_ghost", "item_soul_ring", "item_orchid", "item_bloodthorn"}         # pressed every loop
 assert not set(KEY_BINDING.values()) & set(SLOT_KEYS.values()), "ability and item keys overlap"
-TURRET_BEYOND = 10                  # Deploy Turrets aims this far past where Warp Flare lands its target, on the line from your hero through it
+TURRET_BEYOND = 100                  # Deploy Turrets aims this far past where Warp Flare lands its target, on the line from your hero through it
 WARP_FLARE_BASE_CAST_RANGE = 700    # the game's scripts/npc/heroes/npc_dota_hero_tinker.txt
 CAST_RANGE_BONUS = {"item_aether_lens": (225,), "item_enhancement_keen_eyed": (125, 135, 145)}    # by item_level (the game's scripts/npc/items.txt)
 CAST_RANGE_SLOTS = {*SLOT_KEYS, "neutral0", "neutral1"}     # GSI slots where they work: inventory and neutral, not the backpack
