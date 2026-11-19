@@ -30,7 +30,7 @@ AUTOKEY = {                         # autokey -> the abilities it casts while he
 }
 HERO_ONLY_KEY = "h"                 # Dota: while held, clicks and casts interact only with heroes; held with an autokey
 SLOT_KEYS = {"slot0": "1", "slot1": "2", "slot2": "3", "slot3": "z", "slot4": "x", "slot5": "6"}  # GSI inventory slot -> Dota hotkey; slot6-8 are the backpack
-REPEAT_ITEMS = {"item_blink", "item_overwhelming_blink", "item_swift_blink", "item_arcane_blink","item_cyclone", "item_wind_waker"}
+REPEAT_ITEMS = {"item_blink", "item_overwhelming_blink", "item_swift_blink", "item_arcane_blink","item_cyclone", "item_wind_waker", "item_glimmer_cape"}
 EXTRA_ITEMS = {"item_sheepstick", "item_dagon", "item_dagon_2", "item_dagon_3", "item_dagon_4", "item_dagon_5", "item_ethereal_blade", "item_ghost", "item_soul_ring", "item_orchid", "item_bloodthorn"}         # pressed every loop
 assert not set(KEY_BINDING.values()) & set(SLOT_KEYS.values()), "ability and item keys overlap"
 TURRET_BEYOND = 10                  # Deploy Turrets aims this far past where Warp Flare lands its target, on the line from your hero through it
